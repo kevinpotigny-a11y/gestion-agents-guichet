@@ -84,6 +84,7 @@
     height:28px;
   }
   th.nouvelleSemaine, td.nouvelleSemaine{ border-left:2px solid #9AA3AD; }
+  th.nouveauMois, td.nouveauMois{ border-left:4px solid #5B6572; }
   th.vacances{ background:var(--vert-vacances) !important; }
   th.ferme, td.ferme{
     background:repeating-linear-gradient(45deg, #E4E6E9, #E4E6E9 6px, #D6D9DD 6px, #D6D9DD 12px) !important;
@@ -192,6 +193,8 @@
     z-index:100;
     display:none;
     min-width:210px;
+    max-height:80vh;
+    overflow-y:auto;
   }
   #popup .entete{
     font-size:12px;
@@ -283,6 +286,9 @@
   <select id="filtrePole"><option value="">Tous les pôles</option></select>
   <label style="display:flex;align-items:center;gap:5px;">
     <input type="checkbox" id="filtreGuichet"> Guichet uniquement
+  </label>
+  <label style="display:flex;align-items:center;gap:5px;">
+    <input type="checkbox" id="filtreDeuxMois"> Afficher 2 mois
   </label>
   <button id="btnAjouterAbsence">+ Enregistrer une absence</button>
   <div id="statut">Chargement…</div>
@@ -397,6 +403,7 @@ let clesJS = {};
 let joursSpeciaux = [];
 let poleActif = '';
 let guichetSeulement = false;
+let deuxMois = false;
 let agentSurligne = null;
 let ignorerProchainClicDocument = false;
 let typeSelectionneModale = null;
@@ -519,6 +526,14 @@ function estContractuel(agent){
   return normalise(agent[clesAgent.role] || '').includes('contractuel');
 }
 
+function estSuperviseurGuichet(agent){
+  return normalise(agent[clesAgent.role] || '').includes('superviseurguichet');
+}
+
+function comptePourGuichet(agent){
+  return !!agent[clesAgent.guichet] || estSuperviseurGuichet(agent);
+}
+
 function typeVersClasse(type){
   const t = normalise(type);
   if(t.includes('conge') || t.includes('rtt')) return 'conges';
@@ -562,15 +577,26 @@ function dessiner(){
   cellulesParPosition = {};
   const annee = moisCourant.getFullYear();
   const mois = moisCourant.getMonth();
-  document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' ' + annee;
+  const nbMoisAffiches = deuxMois ? 2 : 1;
+  if(nbMoisAffiches === 1){
+    document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' ' + annee;
+  } else {
+    const moisSuivant = new Date(Date.UTC(annee, mois + 1, 1));
+    document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' → ' + NOMS_MOIS[moisSuivant.getUTCMonth()] + ' ' + moisSuivant.getUTCFullYear();
+  }
 
-  const nbJours = new Date(Date.UTC(annee, mois + 1, 0)).getUTCDate();
   const jours = [];
-  for(let i=0;i<nbJours;i++){
-    const d = new Date(Date.UTC(annee, mois, i+1));
-    const jourSemaine = d.getUTCDay();
-    if(jourSemaine === 0 || jourSemaine === 6) continue;
-    jours.push(d);
+  for(let m = 0; m < nbMoisAffiches; m++){
+    const anneeM = new Date(Date.UTC(annee, mois + m, 1)).getUTCFullYear();
+    const moisM = new Date(Date.UTC(annee, mois + m, 1)).getUTCMonth();
+    const nbJoursMois = new Date(Date.UTC(anneeM, moisM + 1, 0)).getUTCDate();
+    for(let i=0;i<nbJoursMois;i++){
+      const d = new Date(Date.UTC(anneeM, moisM, i+1));
+      const jourSemaine = d.getUTCDay();
+      if(jourSemaine === 0 || jourSemaine === 6) continue;
+      d._nouveauMois = (m > 0 && i === 0);
+      jours.push(d);
+    }
   }
   const aujourdhui = jourUTC(new Date());
   joursCourants = jours;
@@ -594,9 +620,13 @@ function dessiner(){
     const estPoleSejour = normalise(nomGroupe).includes('polesejour');
     groupes[nomGroupe].sort((x, y) => {
       if(estPoleSejour){
-        const gx = x[clesAgent.guichet] ? 0 : 1;
-        const gy = y[clesAgent.guichet] ? 0 : 1;
+        const gx = comptePourGuichet(x) ? 0 : 1;
+        const gy = comptePourGuichet(y) ? 0 : 1;
         if(gx !== gy) return gx - gy;
+        // Le superviseur guichet passe en tête du groupe guichet
+        const svx = estSuperviseurGuichet(x) ? 0 : 1;
+        const svy = estSuperviseurGuichet(y) ? 0 : 1;
+        if(svx !== svy) return svx - svy;
         // Au sein du même groupe (guichet ou non-guichet), les contractuels passent en dernier
         const cx = estContractuel(x) ? 1 : 0;
         const cy = estContractuel(y) ? 1 : 0;
@@ -637,6 +667,7 @@ function dessiner(){
     const th = document.createElement('th');
     th.textContent = d.getUTCDate();
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
+    if(d._nouveauMois) th.classList.add('nouveauMois');
     if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
     const vac = trouverVacances(d);
@@ -662,6 +693,7 @@ function dessiner(){
     const th = document.createElement('th');
     th.textContent = JOURS[d.getUTCDay()-1];
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
+    if(d._nouveauMois) th.classList.add('nouveauMois');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
     const vac = trouverVacances(d);
     const js = trouverJourSpecial(jourUTC(d));
@@ -693,7 +725,7 @@ function dessiner(){
 
     groupes[nomGroupe].forEach(agent => {
       if(estPoleSejour){
-        const estGuichet = !!agent[clesAgent.guichet];
+        const estGuichet = comptePourGuichet(agent);
         if(dernierEtaitGuichet === true && estGuichet === false){
           const trSep = document.createElement('tr');
           trSep.className = 'sousSeparateur';
@@ -731,6 +763,7 @@ function dessiner(){
         cellulesParPosition[ligneIndex + '_' + colIndex] = td;
         const jTS = jourUTC(d);
         if(estDebutSemaine(d)) td.classList.add('nouvelleSemaine');
+        if(d._nouveauMois) td.classList.add('nouveauMois');
         if(jTS === aujourdhui) td.classList.add('aujourdhui');
         const jourSpecial = trouverJourSpecial(jTS);
         const estFerme = jourSpecial && (jourSpecial.categorie === 'jourferie' || jourSpecial.categorie === 'fermeturepref');
@@ -917,7 +950,10 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   let gauche = rect.left;
   if(gauche + largeurPopup > window.innerWidth) gauche = window.innerWidth - largeurPopup - 10;
   popup.style.left = gauche + 'px';
-  popup.style.top = (rect.bottom + 4) + 'px';
+  let haut = rect.bottom + 4;
+  const hauteurEstimee = Math.min(popup.scrollHeight || 260, window.innerHeight * 0.8);
+  if(haut + hauteurEstimee > window.innerHeight) haut = Math.max(10, window.innerHeight - hauteurEstimee - 10);
+  popup.style.top = haut + 'px';
 }
 
 // ---------- Sélection multiple (clic-glisser) ----------
@@ -1507,6 +1543,10 @@ document.getElementById('filtrePole').onchange = (e) => {
 };
 document.getElementById('filtreGuichet').onchange = (e) => {
   guichetSeulement = e.target.checked;
+  dessiner();
+};
+document.getElementById('filtreDeuxMois').onchange = (e) => {
+  deuxMois = e.target.checked;
   dessiner();
 };
 document.getElementById('btnAjouterAbsence').onclick = (e) => {
