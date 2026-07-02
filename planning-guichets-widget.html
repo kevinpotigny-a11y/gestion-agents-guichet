@@ -649,7 +649,7 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
       btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
       btn.onclick = () => {
         const journeeEntiere = document.getElementById('chkJourneeEntiere').checked;
-        enregistrerAbsence(agent, jTS, t.id, estMatin, journeeEntiere, absExistante);
+        proposerEnregistrement(agent, jTS, t, estMatin, journeeEntiere, absExistante, dateLisible, nomAgent);
       };
       popup.appendChild(btn);
     });
@@ -669,6 +669,60 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   if(gauche + largeurPopup > window.innerWidth) gauche = window.innerWidth - largeurPopup - 10;
   popup.style.left = gauche + 'px';
   popup.style.top = (rect.bottom + 4) + 'px';
+}
+
+// Vérifie si l'action envisagée écrase une absence existante d'un type différent,
+// ou touche une absence multi-jours (dans ce cas, action bloquée pour cette moitié).
+function evaluerAction(agent, jTS, typeChoisi, estMatin, journeeEntiere){
+  const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+  const parties = journeeEntiere ? [true, false] : [estMatin];
+  const conflits = [];
+  const verrouillages = [];
+  parties.forEach(m => {
+    const trouve = trouverAbsencePourMoitie(absencesAgent, jTS, m);
+    if(trouve){
+      if(trouve.debTS !== trouve.finTS){
+        verrouillages.push(m ? 'matin' : 'après-midi');
+      } else if(normalise(trouve.absence[clesAbs.type]) !== normalise(typeChoisi)){
+        conflits.push({demi: m ? 'matin' : 'après-midi', ancienType: trouve.absence[clesAbs.type]});
+      }
+    }
+  });
+  return {conflits, verrouillages};
+}
+
+function proposerEnregistrement(agent, jTS, typeChoisi, estMatin, journeeEntiere, absExistante, dateLisible, nomAgent){
+  const {conflits, verrouillages} = evaluerAction(agent, jTS, typeChoisi.id, estMatin, journeeEntiere);
+
+  if(verrouillages.length > 0){
+    const popup = document.getElementById('popup');
+    popup.innerHTML = `
+      <div class="entete">${nomAgent}<br>${dateLisible}</div>
+      <div class="info">⚠ Le ${verrouillages.join(' et le ')} de ce jour fait partie d'une absence sur plusieurs jours.<br>Décoche "Toute la journée" ou modifie-la depuis le tableau Absences.</div>
+    `;
+    return;
+  }
+
+  if(conflits.length > 0){
+    const popup = document.getElementById('popup');
+    const detail = conflits.map(c => `${c.demi} : <strong>${c.ancienType}</strong> → <strong>${typeChoisi.libelle}</strong>`).join('<br>');
+    popup.innerHTML = `
+      <div class="entete">${nomAgent}<br>${dateLisible}</div>
+      <div class="info">⚠ Ceci va remplacer :<br>${detail}</div>
+    `;
+    const btnConfirmer = document.createElement('button');
+    btnConfirmer.textContent = 'Confirmer le remplacement';
+    btnConfirmer.style.color = 'var(--rouge)';
+    btnConfirmer.onclick = () => enregistrerAbsence(agent, jTS, typeChoisi.id, estMatin, journeeEntiere, absExistante);
+    popup.appendChild(btnConfirmer);
+    const btnAnnuler = document.createElement('button');
+    btnAnnuler.textContent = 'Annuler';
+    btnAnnuler.onclick = () => fermerPopup();
+    popup.appendChild(btnAnnuler);
+    return;
+  }
+
+  enregistrerAbsence(agent, jTS, typeChoisi.id, estMatin, journeeEntiere, absExistante);
 }
 
 document.addEventListener('click', (e) => {
