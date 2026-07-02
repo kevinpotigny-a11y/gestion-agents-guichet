@@ -45,6 +45,7 @@
     cursor:pointer;
     font-size:13px;
   }
+  #btnAjouterAbsence{ margin-left:auto; }
   #barre button:hover{ background:#4A5563; }
   #titreMois{
     font-weight:600;
@@ -59,7 +60,6 @@
     font-size:13px;
   }
   #statut{
-    margin-left:auto;
     font-size:12px;
     opacity:0.8;
   }
@@ -226,6 +226,11 @@
     color:var(--texte);
   }
   #popup button:hover{ background:#F1F2F4; }
+  #popup button.btnType.selectionne{ outline:2px solid var(--entete); outline-offset:-2px; background:#F1F2F4; font-weight:600; }
+  #popup button:disabled{ opacity:0.4; cursor:not-allowed; }
+  #popup button:disabled:hover{ background:none; }
+  #popup #btnValiderModale{ background:var(--entete); color:white; }
+  #popup #btnValiderModale:disabled{ background:#3A4552; }
   #popup button.supprimer{ color:var(--rouge); margin-top:4px; border-top:1px solid var(--bordure); border-radius:0; padding-top:9px; }
   #popup .pastille{ width:12px; height:12px; border-radius:3px; border:1px solid var(--bordure); flex-shrink:0; }
   #popup .info{
@@ -387,6 +392,7 @@ let poleActif = '';
 let guichetSeulement = false;
 let agentSurligne = null;
 let ignorerProchainClicDocument = false;
+let typeSelectionneModale = null;
 let joursCourants = [];
 let lignesRendues = [];
 let cellulesParPosition = {};
@@ -472,7 +478,7 @@ async function chargerDonnees(){
     }
 
     remplirFiltrePole();
-    document.getElementById('statut').textContent = agents.length + ' agents · ' + absences.length + ' absences';
+    document.getElementById('statut').textContent = '';
     dessiner();
   }catch(err){
     document.getElementById('statut').textContent = 'Erreur';
@@ -1053,6 +1059,7 @@ async function enregistrerAbsenceMultiple(evaluationsRetenues, jTSDebut, jTSFin,
 // ---------- Modale générale (bouton "Enregistrer une absence") ----------
 function ouvrirModaleGenerale(){
   glisser.actif = false;
+  typeSelectionneModale = null;
   const popup = document.getElementById('popup');
   popup.classList.add('large');
 
@@ -1065,6 +1072,7 @@ function ouvrirModaleGenerale(){
   champAgent.innerHTML = `
     <label>Agent</label>
     <select id="selAgentModale">
+      <option value="" selected disabled>— Sélectionner un agent —</option>
       ${agentsTries.map(a => `<option value="${a._id}">${(a[clesAgent.nom]||'')}${clesAgent.prenom && a[clesAgent.prenom] ? ' ' + a[clesAgent.prenom] : ''}</option>`).join('')}
     </select>
   `;
@@ -1116,11 +1124,28 @@ function ouvrirModaleGenerale(){
 
   TYPES.forEach(t => {
     const btn = document.createElement('button');
+    btn.className = 'btnType';
     const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
     btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
-    btn.onclick = () => lancerEnregistrementDepuisModale(t);
+    btn.onclick = () => {
+      typeSelectionneModale = t;
+      popup.querySelectorAll('.btnType').forEach(b => b.classList.remove('selectionne'));
+      btn.classList.add('selectionne');
+      document.getElementById('btnValiderModale').disabled = false;
+    };
     popup.appendChild(btn);
   });
+
+  const btnValider = document.createElement('button');
+  btnValider.id = 'btnValiderModale';
+  btnValider.textContent = 'Valider';
+  btnValider.disabled = true;
+  btnValider.style.fontWeight = '700';
+  btnValider.style.justifyContent = 'center';
+  btnValider.onclick = () => {
+    if(typeSelectionneModale) lancerEnregistrementDepuisModale(typeSelectionneModale);
+  };
+  popup.appendChild(btnValider);
 
   const btnAnnuler = document.createElement('button');
   btnAnnuler.textContent = 'Annuler';
@@ -1129,12 +1154,17 @@ function ouvrirModaleGenerale(){
 
   popup.style.display = 'block';
   const rect = document.getElementById('btnAjouterAbsence').getBoundingClientRect();
-  popup.style.left = rect.left + 'px';
+  const largeurPopup = 280;
+  let gauche = rect.left;
+  if(gauche + largeurPopup > window.innerWidth) gauche = window.innerWidth - largeurPopup - 10;
+  popup.style.left = gauche + 'px';
   popup.style.top = (rect.bottom + 6) + 'px';
 }
 
 function lancerEnregistrementDepuisModale(typeChoisi){
-  const agentId = parseInt(document.getElementById('selAgentModale').value, 10);
+  const valeurAgent = document.getElementById('selAgentModale').value;
+  if(!valeurAgent){ alert('Merci de sélectionner un agent avant de valider.'); return; }
+  const agentId = parseInt(valeurAgent, 10);
   const agent = agents.find(a => a._id === agentId);
   const valDebut = document.getElementById('dateDebutModale').value;
   const valFin = document.getElementById('dateFinModale').value || valDebut;
