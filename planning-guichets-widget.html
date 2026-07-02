@@ -413,6 +413,10 @@ function trierPoles(listePoles){
   });
 }
 
+function estContractuel(agent){
+  return normalise(agent[clesAgent.role] || '').includes('contractuel');
+}
+
 function typeVersClasse(type){
   const t = normalise(type);
   if(t.includes('conge') || t.includes('rtt')) return 'conges';
@@ -487,6 +491,10 @@ function dessiner(){
         const gx = x[clesAgent.guichet] ? 0 : 1;
         const gy = y[clesAgent.guichet] ? 0 : 1;
         if(gx !== gy) return gx - gy;
+        // Au sein du même groupe (guichet ou non-guichet), les contractuels passent en dernier
+        const cx = estContractuel(x) ? 1 : 0;
+        const cy = estContractuel(y) ? 1 : 0;
+        if(cx !== cy) return cx - cy;
       }
       return (x[clesAgent.nom]||'').localeCompare(y[clesAgent.nom]||'');
     });
