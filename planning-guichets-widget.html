@@ -84,6 +84,16 @@
   }
   th.nouvelleSemaine, td.nouvelleSemaine{ border-left:2px solid #9AA3AD; }
   th.vacances{ background:var(--vert-vacances) !important; }
+  th.ferme, td.ferme{
+    background:repeating-linear-gradient(45deg, #E4E6E9, #E4E6E9 6px, #D6D9DD 6px, #D6D9DD 12px) !important;
+  }
+  td.ferme .moitie{ cursor:not-allowed; pointer-events:none; }
+  th.fermeturePublic{ background:#FCE8CC !important; }
+  .puceRappel{
+    display:inline-block;
+    font-size:10px;
+    margin-left:2px;
+  }
   th.colAgent, td.colAgent{
     min-width:170px;
     text-align:left;
@@ -257,6 +267,8 @@
   <span class="puce"><span class="carre" style="background:var(--ambre);"></span>Temps partiel</span>
   <span class="puce"><span class="carre" style="background:var(--violet);"></span>Autres</span>
   <span class="puce"><span class="carre" style="background:var(--vert-vacances);"></span>Vacances scolaires</span>
+  <span class="puce"><span class="carre" style="background:repeating-linear-gradient(45deg, #E4E6E9, #E4E6E9 3px, #D6D9DD 3px, #D6D9DD 6px);"></span>Jour férié / Fermeture préf. 🔔=rappel Casper</span>
+  <span class="puce"><span class="carre" style="background:#FCE8CC;"></span>Fermeture au public</span>
 </div>
 
 <div id="popup"></div>
@@ -325,6 +337,10 @@ const VACANCES_SCOLAIRES = [
   {debut: '2027-07-03', fin: '2027-09-01', libelle: "Vacances d'été 2027"}
 ];
 
+function trouverJourSpecial(jTS){
+  return joursSpeciaux.find(j => j.jTS === jTS) || null;
+}
+
 function estVacancesScolaires(d){
   const ts = jourUTC(d);
   return VACANCES_SCOLAIRES.some(v => {
@@ -340,6 +356,8 @@ let agents = [];
 let absences = [];
 let clesAgent = {};
 let clesAbs = {};
+let clesJS = {};
+let joursSpeciaux = [];
 let poleActif = '';
 let guichetSeulement = false;
 let agentSurligne = null;
@@ -397,6 +415,35 @@ async function chargerDonnees(){
 
     if(!clesAgent.nom || !clesAbs.agent || !clesAbs.debut || !clesAbs.fin || !clesAbs.type){
       throw new Error("Certaines colonnes attendues (Nom, Agent, Date début, Date fin, Type) sont introuvables. Vérifie les noms de colonnes dans tes tables.");
+    }
+
+    // Table optionnelle : fermetures et journées spéciales (aucune erreur si elle n'existe pas encore)
+    joursSpeciaux = [];
+    clesJS = {};
+    let tableJS = null;
+    for(const nom of ['JoursSpeciaux', 'JOURSSPECIAUX', 'JoursSpéciaux']){
+      try{ tableJS = await grist.docApi.fetchTable(nom); break; } catch(e){}
+    }
+    if(tableJS){
+      const lignesJS = toRows(tableJS);
+      const clesJSBrutes = Object.keys(tableJS).filter(k => k !== 'id');
+      clesJS = {
+        date: trouverCle(clesJSBrutes, ['Date']),
+        libelle: trouverCle(clesJSBrutes, ['Libelle', 'Libellé']),
+        categorie: trouverCle(clesJSBrutes, ['Categorie', 'Catégorie']),
+        rappel: trouverCle(clesJSBrutes, ['RappelCasper'])
+      };
+      if(clesJS.date && clesJS.categorie){
+        joursSpeciaux = lignesJS.map(l => {
+          const d = versDate(l[clesJS.date]);
+          return d ? {
+            jTS: jourUTC(d),
+            libelle: clesJS.libelle ? l[clesJS.libelle] : '',
+            categorie: normalise(l[clesJS.categorie] || ''),
+            rappel: clesJS.rappel ? !!l[clesJS.rappel] : false
+          } : null;
+        }).filter(Boolean);
+      }
     }
 
     remplirFiltrePole();
@@ -537,6 +584,16 @@ function dessiner(){
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
+    const js = trouverJourSpecial(jourUTC(d));
+    if(js){
+      if(js.categorie === 'jourferie' || js.categorie === 'fermeturepref'){
+        th.classList.add('ferme');
+        if(js.rappel) th.innerHTML += ' <span class="puceRappel" title="' + (js.libelle||'') + ' — jour à poser en Casper">🔔</span>';
+      } else if(js.categorie === 'fermeturepublic'){
+        th.classList.add('fermeturePublic');
+      }
+      th.title = js.libelle || '';
+    }
     trJours.appendChild(th);
   });
   thead.appendChild(trJours);
@@ -548,6 +605,11 @@ function dessiner(){
     th.textContent = JOURS[d.getUTCDay()-1];
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
+    const js = trouverJourSpecial(jourUTC(d));
+    if(js){
+      if(js.categorie === 'jourferie' || js.categorie === 'fermeturepref') th.classList.add('ferme');
+      else if(js.categorie === 'fermeturepublic') th.classList.add('fermeturePublic');
+    }
     trLettres.appendChild(th);
   });
   thead.appendChild(trLettres);
@@ -606,6 +668,9 @@ function dessiner(){
         const jTS = jourUTC(d);
         if(estDebutSemaine(d)) td.classList.add('nouvelleSemaine');
         if(jTS === aujourdhui) td.classList.add('aujourdhui');
+        const jourSpecial = trouverJourSpecial(jTS);
+        const estFerme = jourSpecial && (jourSpecial.categorie === 'jourferie' || jourSpecial.categorie === 'fermeturepref');
+        if(estFerme) td.classList.add('ferme');
 
         let uneEstTeletravail = false;
 
@@ -623,10 +688,14 @@ function dessiner(){
             verrouillee = trouve.debTS !== trouve.finTS;
             absExistante = trouve.absence;
             div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
+          } else if(estFerme){
+            div.title = jourSpecial.libelle || 'Jour fermé';
           } else {
             div.title = 'Cliquer, ou cliquer-glisser pour sélectionner plusieurs cases (' + (estMatin ? 'matin' : 'après-midi') + ')';
           }
-          div.onmousedown = (e) => demarrerGlisser(e, agent, jTS, ligneIndex, colIndex, estMatin, absExistante, verrouillee);
+          if(!estFerme){
+            div.onmousedown = (e) => demarrerGlisser(e, agent, jTS, ligneIndex, colIndex, estMatin, absExistante, verrouillee);
+          }
           td.appendChild(div);
         });
 
