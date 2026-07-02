@@ -631,8 +631,23 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   if(verrouillee){
     popup.innerHTML = `
       <div class="entete">${nomAgent}<br>${dateLisible}</div>
-      <div class="info">Cette case fait partie d'une absence sur plusieurs jours.<br>Modifie-la depuis le tableau Absences.</div>
+      <div class="info">Cette case fait partie d'une absence sur plusieurs jours (${absExistante[clesAbs.type]}).</div>
     `;
+    const btnDemi = document.createElement('button');
+    btnDemi.textContent = 'Supprimer cette demi-journée (' + (estMatin ? 'matin' : 'après-midi') + ')';
+    btnDemi.onclick = () => supprimerPartiel(absExistante, jTS, estMatin ? 'demi-matin' : 'demi-apresmidi');
+    popup.appendChild(btnDemi);
+
+    const btnJournee = document.createElement('button');
+    btnJournee.textContent = 'Supprimer cette journée entière';
+    btnJournee.onclick = () => supprimerPartiel(absExistante, jTS, 'journee');
+    popup.appendChild(btnJournee);
+
+    const btnPeriode = document.createElement('button');
+    btnPeriode.className = 'supprimer';
+    btnPeriode.textContent = 'Supprimer toute la période';
+    btnPeriode.onclick = () => supprimerAbsence(absExistante);
+    popup.appendChild(btnPeriode);
   } else {
     popup.innerHTML = `
       <div class="entete">${nomAgent}<br>${dateLisible}</div>
@@ -773,6 +788,88 @@ async function enregistrerAbsence(agent, jTS, typeChoisi, estMatin, journeeEntie
     }
   }catch(err){
     alert("Erreur lors de l'enregistrement : " + err.message);
+  }
+}
+
+function joursEntre(debTS, finTS){
+  const jours = [];
+  for(let t = debTS; t <= finTS; t += 86400000){
+    jours.push(t);
+  }
+  return jours;
+}
+
+// Recalcule les fragments restants d'une absence après avoir retiré une demi-journée ou une journée
+function decomposerAbsence(absence, jTSRetire, portee){
+  const deb = versDate(absence[clesAbs.debut]);
+  const fin = versDate(absence[clesAbs.fin]) || deb;
+  const debTS = jourUTC(deb), finTS = jourUTC(fin);
+  const jours = joursEntre(debTS, finTS);
+
+  const couverture = {};
+  jours.forEach(j => {
+    couverture[j] = demiJourActives(absence, j, debTS, finTS);
+  });
+
+  if(portee === 'journee'){
+    couverture[jTSRetire] = {matin:false, apresmidi:false};
+  } else if(portee === 'demi-matin'){
+    couverture[jTSRetire] = {...couverture[jTSRetire], matin:false};
+  } else if(portee === 'demi-apresmidi'){
+    couverture[jTSRetire] = {...couverture[jTSRetire], apresmidi:false};
+  }
+
+  const fragments = [];
+  let courant = null;
+  jours.forEach(j => {
+    const cov = couverture[j];
+    if(!cov.matin && !cov.apresmidi){
+      if(courant){ fragments.push(courant); courant = null; }
+      return;
+    }
+    if(cov.matin && cov.apresmidi){
+      if(!courant) courant = {debut:j, fin:j, debutDemi:null, finDemi:null};
+      else courant.fin = j;
+      return;
+    }
+    if(cov.matin && !cov.apresmidi){
+      if(!courant){
+        fragments.push({debut:j, fin:j, debutDemi:null, finDemi:'Matin'});
+      } else {
+        courant.fin = j;
+        courant.finDemi = 'Matin';
+        fragments.push(courant);
+        courant = null;
+      }
+      return;
+    }
+    if(courant){ fragments.push(courant); }
+    courant = {debut:j, fin:j, debutDemi:'Apres midi', finDemi:null};
+  });
+  if(courant) fragments.push(courant);
+  return fragments;
+}
+
+async function supprimerPartiel(absence, jTS, portee){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Suppression…';
+  try{
+    const fragments = decomposerAbsence(absence, jTS, portee);
+    const actions = [['RemoveRecord', 'Absences', absence._id]];
+    fragments.forEach(f => {
+      const champs = {
+        [clesAbs.agent]: absence[clesAbs.agent],
+        [clesAbs.debut]: versTimestampGrist(f.debut),
+        [clesAbs.fin]: versTimestampGrist(f.fin),
+        [clesAbs.type]: absence[clesAbs.type]
+      };
+      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
+      if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
+      actions.push(['AddRecord', 'Absences', null, champs]);
+    });
+    await grist.docApi.applyUserActions(actions);
+  }catch(err){
+    alert('Erreur lors de la suppression : ' + err.message);
   }
 }
 
