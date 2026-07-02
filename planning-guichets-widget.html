@@ -371,13 +371,17 @@ function trouverJourSpecial(jTS){
   return joursSpeciaux.find(j => j.jTS === jTS) || null;
 }
 
-function estVacancesScolaires(d){
+function trouverVacances(d){
   const ts = jourUTC(d);
-  return VACANCES_SCOLAIRES.some(v => {
+  return VACANCES_SCOLAIRES.find(v => {
     const debTS = jourUTC(new Date(v.debut + 'T00:00:00Z'));
     const finTS = jourUTC(new Date(v.fin + 'T00:00:00Z'));
     return ts >= debTS && ts <= finTS;
-  });
+  }) || null;
+}
+
+function estVacancesScolaires(d){
+  return !!trouverVacances(d);
 }
 
 let moisCourant = new Date();
@@ -615,6 +619,7 @@ function dessiner(){
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
+    const vac = trouverVacances(d);
     const js = trouverJourSpecial(jourUTC(d));
     if(js){
       if(js.categorie === 'jourferie' || js.categorie === 'fermeturepref'){
@@ -624,6 +629,8 @@ function dessiner(){
         th.classList.add('fermeturePublic');
       }
       th.title = js.libelle || '';
+    } else if(vac){
+      th.title = vac.libelle;
     }
     trJours.appendChild(th);
   });
@@ -636,11 +643,14 @@ function dessiner(){
     th.textContent = JOURS[d.getUTCDay()-1];
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(estVacancesScolaires(d)) th.classList.add('vacances');
+    const vac = trouverVacances(d);
     const js = trouverJourSpecial(jourUTC(d));
     if(js){
       if(js.categorie === 'jourferie' || js.categorie === 'fermeturepref') th.classList.add('ferme');
       else if(js.categorie === 'fermeturepublic') th.classList.add('fermeturePublic');
       th.title = js.libelle || '';
+    } else if(vac){
+      th.title = vac.libelle;
     }
     trLettres.appendChild(th);
   });
