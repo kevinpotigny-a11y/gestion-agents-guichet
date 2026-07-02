@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Planning guichets — vue d'ensemble</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root{
+    --cyan: #4FD1E3;
+    --rouge: #B23A32;
+    --violet: #D8C7F0;
+    --ambre: #F4A340;
+    --bordure: #DADDE1;
+    --texte: #2A2E33;
+    --fond: #FAFBFC;
+    --entete: #1F2933;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    color:var(--texte);
+    background:var(--fond);
+    font-size:13px;
+  }
+  #barre{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:10px 14px;
+    background:var(--entete);
+    color:white;
+    position:sticky;
+    top:0;
+    z-index:30;
+    flex-wrap:wrap;
+  }
+  #barre button{
+    background:#3A4552;
+    border:none;
+    color:white;
+    padding:6px 12px;
+    border-radius:5px;
+    cursor:pointer;
+    font-size:13px;
+  }
+  #barre button:hover{ background:#4A5563; }
+  #titreMois{
+    font-weight:600;
+    min-width:150px;
+    text-align:center;
+    text-transform:capitalize;
+  }
+  #barre select{
+    padding:5px 8px;
+    border-radius:5px;
+    border:none;
+    font-size:13px;
+  }
+  #statut{
+    margin-left:auto;
+    font-size:12px;
+    opacity:0.8;
+  }
+  #conteneur{
+    overflow:auto;
+    height:calc(100vh - 46px);
+  }
+  table{
+    border-collapse:separate;
+    border-spacing:0;
+    width:100%;
+  }
+  th, td{
+    border-right:1px solid var(--bordure);
+    border-bottom:1px solid var(--bordure);
+    text-align:center;
+    padding:0;
+    min-width:26px;
+    height:26px;
+  }
+  th.colAgent, td.colAgent{
+    min-width:170px;
+    text-align:left;
+    padding-left:8px;
+    position:sticky;
+    left:0;
+    background:white;
+    z-index:10;
+    font-weight:500;
+    white-space:nowrap;
+  }
+  thead th{
+    position:sticky;
+    top:0;
+    background:#EEF1F4;
+    z-index:20;
+    font-weight:600;
+    padding:4px 2px;
+  }
+  thead th.colAgent{
+    z-index:25;
+    background:#EEF1F4;
+  }
+  thead tr.joursSemaine th{ font-size:10px; color:#6B7280; font-weight:400; }
+  .weekend{ background:#F1F2F4; }
+  tr.groupe td{
+    background:#DDE3EA;
+    font-weight:700;
+    text-align:left;
+    padding-left:8px;
+    position:sticky;
+    left:0;
+  }
+  .cellule{ position:relative; }
+  .cellule.conges{ background:var(--cyan); }
+  .cellule.formation{ background:var(--rouge); }
+  .cellule.teletravail{ background:white; }
+  .cellule.teletravail::after{
+    content:"T";
+    font-size:10px;
+    color:#6B7280;
+  }
+  .cellule.tempspartiel{ background:var(--ambre); }
+  .cellule.autres{ background:var(--violet); }
+  .aujourdhui{ box-shadow: inset 0 0 0 2px #1F2933; }
+  #legende{
+    display:flex;
+    gap:16px;
+    padding:8px 14px;
+    flex-wrap:wrap;
+    font-size:12px;
+    border-top:1px solid var(--bordure);
+    background:white;
+  }
+  .puce{ display:inline-flex; align-items:center; gap:5px; }
+  .carre{ width:13px; height:13px; border-radius:3px; display:inline-block; border:1px solid var(--bordure); }
+  #erreur{
+    padding:20px;
+    color:#B23A32;
+    font-size:14px;
+  }
+</style>
+</head>
+<body>
+
+<div id="barre">
+  <button id="btnPrev">‹</button>
+  <div id="titreMois">—</div>
+  <button id="btnNext">›</button>
+  <select id="filtrePole"><option value="">Tous les pôles</option></select>
+  <label style="display:flex;align-items:center;gap:5px;">
+    <input type="checkbox" id="filtreGuichet"> Guichet uniquement
+  </label>
+  <div id="statut">Chargement…</div>
+</div>
+
+<div id="conteneur">
+  <table id="grille"><thead></thead><tbody></tbody></table>
+  <div id="erreur" style="display:none;"></div>
+</div>
+
+<div id="legende">
+  <span class="puce"><span class="carre" style="background:var(--cyan);"></span>Congés / RTT</span>
+  <span class="puce"><span class="carre" style="background:var(--rouge);"></span>Formation</span>
+  <span class="puce"><span class="carre" style="background:white;">T</span>Télétravail</span>
+  <span class="puce"><span class="carre" style="background:var(--ambre);"></span>Temps partiel</span>
+  <span class="puce"><span class="carre" style="background:var(--violet);"></span>Autres</span>
+</div>
+
+<script>
+// ---------- Utilitaires ----------
+function normalise(s){
+  return (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+}
+function trouverCle(objKeys, candidats){
+  const norm = objKeys.map(k => ({orig:k, n:normalise(k)}));
+  for(const cand of candidats){
+    const c = normalise(cand);
+    const trouve = norm.find(x => x.n === c);
+    if(trouve) return trouve.orig;
+  }
+  for(const cand of candidats){
+    const c = normalise(cand);
+    const trouve = norm.find(x => x.n.includes(c));
+    if(trouve) return trouve.orig;
+  }
+  return null;
+}
+function versDate(valeur){
+  if(valeur === null || valeur === undefined || valeur === '') return null;
+  if(typeof valeur === 'number') return new Date(valeur * 1000);
+  const d = new Date(valeur);
+  return isNaN(d) ? null : d;
+}
+function jourUTC(d){
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+function toRows(colTable){
+  const ids = colTable.id;
+  const rows = [];
+  for(let i=0;i<ids.length;i++){
+    const row = {_id: ids[i]};
+    for(const cle in colTable){
+      if(cle === 'id') continue;
+      row[cle] = colTable[cle][i];
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ---------- État ----------
+let moisCourant = new Date();
+moisCourant.setDate(1);
+let agents = [];
+let absences = [];
+let clesAgent = {};
+let clesAbs = {};
+let poleActif = '';
+let guichetSeulement = false;
+
+const NOMS_MOIS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+const JOURS = ['L','M','M','J','V','S','D'];
+
+// ---------- Chargement ----------
+grist.ready({requiredAccess: 'full'});
+
+async function chargerDonnees(){
+  document.getElementById('statut').textContent = 'Chargement…';
+  document.getElementById('erreur').style.display = 'none';
+  try{
+    let tableAgents, tableAbs;
+    for(const nom of ['Agents','AGENTS','Agent']){
+      try{ tableAgents = await grist.docApi.fetchTable(nom); break; } catch(e){}
+    }
+    for(const nom of ['Absences','ABSENCES','Absence']){
+      try{ tableAbs = await grist.docApi.fetchTable(nom); break; } catch(e){}
+    }
+    if(!tableAgents || !tableAbs){
+      throw new Error("Impossible de trouver les tables 'Agents' et/ou 'Absences'. Vérifie leur nom exact dans Grist.");
+    }
+
+    agents = toRows(tableAgents);
+    absences = toRows(tableAbs);
+
+    const clesA = Object.keys(tableAgents).filter(k => k !== 'id');
+    clesAgent = {
+      nom: trouverCle(clesA, ['Nom']),
+      prenom: trouverCle(clesA, ['Prenom','Prénom']),
+      pole: trouverCle(clesA, ['Pole','Pôle']),
+      role: trouverCle(clesA, ['Role','Rôle']),
+      guichet: trouverCle(clesA, ['Guichet'])
+    };
+
+    const clesB = Object.keys(tableAbs).filter(k => k !== 'id');
+    clesAbs = {
+      agent: trouverCle(clesB, ['Agent']),
+      debut: trouverCle(clesB, ['Datedebut','Date_debut','DateDebut']),
+      fin: trouverCle(clesB, ['Datefin','Date_fin','DateFin']),
+      type: trouverCle(clesB, ['Type'])
+    };
+
+    if(!clesAgent.nom || !clesAbs.agent || !clesAbs.debut || !clesAbs.fin){
+      throw new Error("Certaines colonnes attendues (Nom, Agent, Date début, Date fin) sont introuvables. Vérifie les noms de colonnes dans tes tables.");
+    }
+
+    remplirFiltrePole();
+    document.getElementById('statut').textContent = agents.length + ' agents · ' + absences.length + ' absences';
+    dessiner();
+  }catch(err){
+    document.getElementById('statut').textContent = 'Erreur';
+    const zone = document.getElementById('erreur');
+    zone.style.display = 'block';
+    zone.textContent = '⚠ ' + err.message;
+  }
+}
+
+function remplirFiltrePole(){
+  const sel = document.getElementById('filtrePole');
+  const valeurActuelle = sel.value;
+  const poles = [...new Set(agents.map(a => a[clesAgent.pole]).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">Tous les pôles</option>' + poles.map(p => `<option value="${p}">${p}</option>`).join('');
+  sel.value = valeurActuelle;
+}
+
+// ---------- Rendu ----------
+function typeVersClasse(type){
+  const t = normalise(type);
+  if(t.includes('conge') || t.includes('rtt')) return 'conges';
+  if(t.includes('formation')) return 'formation';
+  if(t.includes('teletravail')) return 'teletravail';
+  if(t.includes('tempspartiel')) return 'tempspartiel';
+  return 'autres';
+}
+
+function dessiner(){
+  const annee = moisCourant.getFullYear();
+  const mois = moisCourant.getMonth();
+  document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' ' + annee;
+
+  const premierJour = new Date(Date.UTC(annee, mois, 1));
+  const nbJours = new Date(Date.UTC(annee, mois + 1, 0)).getUTCDate();
+  const jours = [];
+  for(let i=0;i<nbJours;i++){
+    jours.push(new Date(Date.UTC(annee, mois, i+1)));
+  }
+  const aujourdhui = jourUTC(new Date());
+
+  // Filtrage agents
+  let agentsAffiches = agents.filter(a => {
+    if(poleActif && a[clesAgent.pole] !== poleActif) return false;
+    if(guichetSeulement && !a[clesAgent.guichet]) return false;
+    return true;
+  });
+
+  // Groupement par pôle
+  const groupes = {};
+  agentsAffiches.forEach(a => {
+    const p = a[clesAgent.pole] || 'Non renseigné';
+    if(!groupes[p]) groupes[p] = [];
+    groupes[p].push(a);
+  });
+  Object.values(groupes).forEach(liste => liste.sort((x,y) => (x[clesAgent.nom]||'').localeCompare(y[clesAgent.nom]||'')));
+
+  // En-tête
+  const thead = document.querySelector('#grille thead');
+  thead.innerHTML = '';
+  const trJours = document.createElement('tr');
+  const thAngle = document.createElement('th');
+  thAngle.className = 'colAgent';
+  thAngle.textContent = 'Agent';
+  thAngle.rowSpan = 2;
+  trJours.appendChild(thAngle);
+  jours.forEach(d => {
+    const th = document.createElement('th');
+    th.textContent = d.getUTCDate();
+    if(d.getUTCDay() === 0 || d.getUTCDay() === 6) th.classList.add('weekend');
+    if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
+    trJours.appendChild(th);
+  });
+  thead.appendChild(trJours);
+
+  const trLettres = document.createElement('tr');
+  trLettres.className = 'joursSemaine';
+  jours.forEach(d => {
+    const th = document.createElement('th');
+    th.textContent = JOURS[(d.getUTCDay()+6)%7];
+    if(d.getUTCDay() === 0 || d.getUTCDay() === 6) th.classList.add('weekend');
+    trLettres.appendChild(th);
+  });
+  thead.appendChild(trLettres);
+
+  // Corps
+  const tbody = document.querySelector('#grille tbody');
+  tbody.innerHTML = '';
+
+  Object.keys(groupes).sort().forEach(nomGroupe => {
+    const trGroupe = document.createElement('tr');
+    trGroupe.className = 'groupe';
+    const tdGroupe = document.createElement('td');
+    tdGroupe.colSpan = jours.length + 1;
+    tdGroupe.textContent = nomGroupe;
+    trGroupe.appendChild(tdGroupe);
+    tbody.appendChild(trGroupe);
+
+    groupes[nomGroupe].forEach(agent => {
+      const tr = document.createElement('tr');
+      const tdNom = document.createElement('td');
+      tdNom.className = 'colAgent';
+      tdNom.textContent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
+      tr.appendChild(tdNom);
+
+      const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+
+      jours.forEach(d => {
+        const td = document.createElement('td');
+        td.className = 'cellule';
+        const jTS = jourUTC(d);
+        if(d.getUTCDay() === 0 || d.getUTCDay() === 6) td.classList.add('weekend');
+        if(jTS === aujourdhui) td.classList.add('aujourdhui');
+
+        const absTrouvee = absencesAgent.find(ab => {
+          const deb = versDate(ab[clesAbs.debut]);
+          const fin = versDate(ab[clesAbs.fin]) || deb;
+          if(!deb) return false;
+          return jTS >= jourUTC(deb) && jTS <= jourUTC(fin);
+        });
+        if(absTrouvee){
+          const type = clesAbs.type ? absTrouvee[clesAbs.type] : 'Autres';
+          td.classList.add(typeVersClasse(type));
+          td.title = (agent[clesAgent.nom]||'') + ' — ' + type;
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+// ---------- Événements ----------
+document.getElementById('btnPrev').onclick = () => {
+  moisCourant.setMonth(moisCourant.getMonth() - 1);
+  dessiner();
+};
+document.getElementById('btnNext').onclick = () => {
+  moisCourant.setMonth(moisCourant.getMonth() + 1);
+  dessiner();
+};
+document.getElementById('filtrePole').onchange = (e) => {
+  poleActif = e.target.value;
+  dessiner();
+};
+document.getElementById('filtreGuichet').onchange = (e) => {
+  guichetSeulement = e.target.checked;
+  dessiner();
+};
+
+grist.onRecords(() => { chargerDonnees(); });
+chargerDonnees();
+</script>
+</body>
+</html>
