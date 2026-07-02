@@ -76,9 +76,10 @@
     border-bottom:1px solid var(--bordure);
     text-align:center;
     padding:0;
-    min-width:26px;
-    height:26px;
+    min-width:30px;
+    height:28px;
   }
+  th.nouvelleSemaine, td.nouvelleSemaine{ border-left:2px solid #9AA3AD; }
   th.colAgent, td.colAgent{
     min-width:170px;
     text-align:left;
@@ -103,7 +104,6 @@
     background:#EEF1F4;
   }
   thead tr.joursSemaine th{ font-size:10px; color:#6B7280; font-weight:400; }
-  .weekend{ background:#F1F2F4; }
   tr.groupe td{
     background:#DDE3EA;
     font-weight:700;
@@ -112,17 +112,28 @@
     position:sticky;
     left:0;
   }
-  .cellule{ position:relative; }
-  .cellule.conges{ background:var(--cyan); }
-  .cellule.formation{ background:var(--rouge); }
-  .cellule.teletravail{ background:white; }
-  .cellule.teletravail::after{
-    content:"T";
-    font-size:10px;
-    color:#6B7280;
+  td.cellule{ padding:0; }
+  .moitie{
+    height:50%;
+    cursor:pointer;
+    position:relative;
   }
-  .cellule.tempspartiel{ background:var(--ambre); }
-  .cellule.autres{ background:var(--violet); }
+  .moitie:hover{ outline:2px solid #1F2933; outline-offset:-2px; z-index:1; }
+  .moitie.matin{ border-bottom:1px dashed rgba(0,0,0,0.12); }
+  .moitie.conges{ background:var(--cyan); }
+  .moitie.formation{ background:var(--rouge); }
+  .moitie.teletravail{ background:#F3F4F6; }
+  .moitie.teletravail::after{
+    content:"T";
+    font-size:9px;
+    color:#6B7280;
+    position:absolute;
+    right:2px;
+    top:50%;
+    transform:translateY(-50%);
+  }
+  .moitie.tempspartiel{ background:var(--ambre); }
+  .moitie.autres{ background:var(--violet); }
   .aujourdhui{ box-shadow: inset 0 0 0 2px #1F2933; }
   #legende{
     display:flex;
@@ -139,6 +150,60 @@
     padding:20px;
     color:#B23A32;
     font-size:14px;
+  }
+  #popup{
+    position:fixed;
+    background:white;
+    border:1px solid var(--bordure);
+    border-radius:8px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.18);
+    padding:8px;
+    z-index:100;
+    display:none;
+    min-width:210px;
+  }
+  #popup .entete{
+    font-size:12px;
+    font-weight:600;
+    padding:4px 6px 4px;
+  }
+  #popup .sousMoment{
+    font-size:11px;
+    color:#6B7280;
+    padding:0 6px 8px;
+    border-bottom:1px solid var(--bordure);
+    margin-bottom:6px;
+  }
+  #popup label.toggle{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:12px;
+    padding:4px 6px 8px;
+    border-bottom:1px solid var(--bordure);
+    margin-bottom:4px;
+  }
+  #popup button{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    width:100%;
+    text-align:left;
+    padding:7px 8px;
+    border:none;
+    background:none;
+    border-radius:5px;
+    cursor:pointer;
+    font-size:13px;
+    color:var(--texte);
+  }
+  #popup button:hover{ background:#F1F2F4; }
+  #popup button.supprimer{ color:var(--rouge); margin-top:4px; border-top:1px solid var(--bordure); border-radius:0; padding-top:9px; }
+  #popup .pastille{ width:12px; height:12px; border-radius:3px; border:1px solid var(--bordure); flex-shrink:0; }
+  #popup .info{
+    font-size:11px;
+    color:#6B7280;
+    padding:4px 6px 2px;
   }
 </style>
 </head>
@@ -163,10 +228,13 @@
 <div id="legende">
   <span class="puce"><span class="carre" style="background:var(--cyan);"></span>Congés / RTT</span>
   <span class="puce"><span class="carre" style="background:var(--rouge);"></span>Formation</span>
-  <span class="puce"><span class="carre" style="background:white;">T</span>Télétravail</span>
+  <span class="puce"><span class="carre" style="background:#F3F4F6;">T</span>Télétravail</span>
   <span class="puce"><span class="carre" style="background:var(--ambre);"></span>Temps partiel</span>
   <span class="puce"><span class="carre" style="background:var(--violet);"></span>Autres</span>
+  <span style="margin-left:auto;color:#6B7280;">Clique en haut (matin) ou en bas (après-midi) d'une case</span>
 </div>
+
+<div id="popup"></div>
 
 <script>
 // ---------- Utilitaires ----------
@@ -196,6 +264,9 @@ function versDate(valeur){
 function jourUTC(d){
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
+function versTimestampGrist(anneeMoisJourUTC){
+  return Math.floor(anneeMoisJourUTC / 1000);
+}
 function toRows(colTable){
   const ids = colTable.id;
   const rows = [];
@@ -210,6 +281,14 @@ function toRows(colTable){
   return rows;
 }
 
+const TYPES = [
+  {id:'Congés/RTT', classe:'conges', var:'cyan', libelle:'Congés / RTT'},
+  {id:'Formation', classe:'formation', var:'rouge', libelle:'Formation'},
+  {id:'Télétravail', classe:'teletravail', var:null, libelle:'Télétravail'},
+  {id:'Temps partiel', classe:'tempspartiel', var:'ambre', libelle:'Temps partiel'},
+  {id:'Autres', classe:'autres', var:'violet', libelle:'Autres'}
+];
+
 // ---------- État ----------
 let moisCourant = new Date();
 moisCourant.setDate(1);
@@ -221,7 +300,7 @@ let poleActif = '';
 let guichetSeulement = false;
 
 const NOMS_MOIS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-const JOURS = ['L','M','M','J','V','S','D'];
+const JOURS = ['L','M','M','J','V'];
 
 // ---------- Chargement ----------
 grist.ready({requiredAccess: 'full'});
@@ -254,15 +333,19 @@ async function chargerDonnees(){
     };
 
     const clesB = Object.keys(tableAbs).filter(k => k !== 'id');
+    const clesMatin = clesB.filter(k => normalise(k).includes('matin'));
+
     clesAbs = {
       agent: trouverCle(clesB, ['Agent']),
       debut: trouverCle(clesB, ['Datedebut','Date_debut','DateDebut']),
       fin: trouverCle(clesB, ['Datefin','Date_fin','DateFin']),
-      type: trouverCle(clesB, ['Type'])
+      type: trouverCle(clesB, ['Type']),
+      debutDemi: clesMatin[0] || null,
+      finDemi: clesMatin[1] || null
     };
 
-    if(!clesAgent.nom || !clesAbs.agent || !clesAbs.debut || !clesAbs.fin){
-      throw new Error("Certaines colonnes attendues (Nom, Agent, Date début, Date fin) sont introuvables. Vérifie les noms de colonnes dans tes tables.");
+    if(!clesAgent.nom || !clesAbs.agent || !clesAbs.debut || !clesAbs.fin || !clesAbs.type){
+      throw new Error("Certaines colonnes attendues (Nom, Agent, Date début, Date fin, Type) sont introuvables. Vérifie les noms de colonnes dans tes tables.");
     }
 
     remplirFiltrePole();
@@ -284,7 +367,6 @@ function remplirFiltrePole(){
   sel.value = valeurActuelle;
 }
 
-// ---------- Rendu ----------
 function typeVersClasse(type){
   const t = normalise(type);
   if(t.includes('conge') || t.includes('rtt')) return 'conges';
@@ -294,27 +376,57 @@ function typeVersClasse(type){
   return 'autres';
 }
 
+// Détermine si le matin / l'après-midi d'un jour donné sont couverts par une absence
+function demiJourActives(ab, jTS, debTS, finTS){
+  let matin = true, apresmidi = true;
+  if(jTS === debTS && clesAbs.debutDemi){
+    const dd = normalise(ab[clesAbs.debutDemi] || '');
+    if(dd.includes('apresmidi')) matin = false;
+  }
+  if(jTS === finTS && clesAbs.finDemi){
+    const fd = normalise(ab[clesAbs.finDemi] || '');
+    if(fd.includes('matin')) apresmidi = false;
+  }
+  return {matin, apresmidi};
+}
+
+function trouverAbsencePourMoitie(absencesAgent, jTS, estMatin){
+  for(const ab of absencesAgent){
+    const deb = versDate(ab[clesAbs.debut]);
+    const fin = versDate(ab[clesAbs.fin]) || deb;
+    if(!deb) continue;
+    const debTS = jourUTC(deb), finTS = jourUTC(fin);
+    if(jTS < debTS || jTS > finTS) continue;
+    const {matin, apresmidi} = demiJourActives(ab, jTS, debTS, finTS);
+    if(estMatin && matin) return {absence: ab, debTS, finTS};
+    if(!estMatin && apresmidi) return {absence: ab, debTS, finTS};
+  }
+  return null;
+}
+
+// ---------- Rendu ----------
 function dessiner(){
+  fermerPopup();
   const annee = moisCourant.getFullYear();
   const mois = moisCourant.getMonth();
   document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' ' + annee;
 
-  const premierJour = new Date(Date.UTC(annee, mois, 1));
   const nbJours = new Date(Date.UTC(annee, mois + 1, 0)).getUTCDate();
   const jours = [];
   for(let i=0;i<nbJours;i++){
-    jours.push(new Date(Date.UTC(annee, mois, i+1)));
+    const d = new Date(Date.UTC(annee, mois, i+1));
+    const jourSemaine = d.getUTCDay();
+    if(jourSemaine === 0 || jourSemaine === 6) continue;
+    jours.push(d);
   }
   const aujourdhui = jourUTC(new Date());
 
-  // Filtrage agents
   let agentsAffiches = agents.filter(a => {
     if(poleActif && a[clesAgent.pole] !== poleActif) return false;
     if(guichetSeulement && !a[clesAgent.guichet]) return false;
     return true;
   });
 
-  // Groupement par pôle
   const groupes = {};
   agentsAffiches.forEach(a => {
     const p = a[clesAgent.pole] || 'Non renseigné';
@@ -323,7 +435,8 @@ function dessiner(){
   });
   Object.values(groupes).forEach(liste => liste.sort((x,y) => (x[clesAgent.nom]||'').localeCompare(y[clesAgent.nom]||'')));
 
-  // En-tête
+  function estDebutSemaine(d){ return d.getUTCDay() === 1; }
+
   const thead = document.querySelector('#grille thead');
   thead.innerHTML = '';
   const trJours = document.createElement('tr');
@@ -335,7 +448,7 @@ function dessiner(){
   jours.forEach(d => {
     const th = document.createElement('th');
     th.textContent = d.getUTCDate();
-    if(d.getUTCDay() === 0 || d.getUTCDay() === 6) th.classList.add('weekend');
+    if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
     trJours.appendChild(th);
   });
@@ -345,13 +458,12 @@ function dessiner(){
   trLettres.className = 'joursSemaine';
   jours.forEach(d => {
     const th = document.createElement('th');
-    th.textContent = JOURS[(d.getUTCDay()+6)%7];
-    if(d.getUTCDay() === 0 || d.getUTCDay() === 6) th.classList.add('weekend');
+    th.textContent = JOURS[d.getUTCDay()-1];
+    if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     trLettres.appendChild(th);
   });
   thead.appendChild(trLettres);
 
-  // Corps
   const tbody = document.querySelector('#grille tbody');
   tbody.innerHTML = '';
 
@@ -377,25 +489,151 @@ function dessiner(){
         const td = document.createElement('td');
         td.className = 'cellule';
         const jTS = jourUTC(d);
-        if(d.getUTCDay() === 0 || d.getUTCDay() === 6) td.classList.add('weekend');
+        if(estDebutSemaine(d)) td.classList.add('nouvelleSemaine');
         if(jTS === aujourdhui) td.classList.add('aujourdhui');
 
-        const absTrouvee = absencesAgent.find(ab => {
-          const deb = versDate(ab[clesAbs.debut]);
-          const fin = versDate(ab[clesAbs.fin]) || deb;
-          if(!deb) return false;
-          return jTS >= jourUTC(deb) && jTS <= jourUTC(fin);
+        [true, false].forEach(estMatin => {
+          const div = document.createElement('div');
+          div.className = 'moitie ' + (estMatin ? 'matin' : 'apresmidi');
+          const trouve = trouverAbsencePourMoitie(absencesAgent, jTS, estMatin);
+          let verrouillee = false;
+          let absExistante = null;
+          if(trouve){
+            const type = trouve.absence[clesAbs.type];
+            div.classList.add(typeVersClasse(type));
+            verrouillee = trouve.debTS !== trouve.finTS;
+            absExistante = trouve.absence;
+            div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
+          } else {
+            div.title = 'Cliquer pour ajouter une absence (' + (estMatin ? 'matin' : 'après-midi') + ')';
+          }
+          div.onclick = (e) => ouvrirPopup(e, agent, jTS, absExistante, verrouillee, estMatin);
+          td.appendChild(div);
         });
-        if(absTrouvee){
-          const type = clesAbs.type ? absTrouvee[clesAbs.type] : 'Autres';
-          td.classList.add(typeVersClasse(type));
-          td.title = (agent[clesAgent.nom]||'') + ' — ' + type;
-        }
+
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
     });
   });
+}
+
+// ---------- Interaction (popup) ----------
+function fermerPopup(){
+  document.getElementById('popup').style.display = 'none';
+}
+
+function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
+  evt.stopPropagation();
+  const popup = document.getElementById('popup');
+  const nomAgent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
+  const dateLisible = new Date(jTS).toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', timeZone:'UTC'});
+
+  if(verrouillee){
+    popup.innerHTML = `
+      <div class="entete">${nomAgent}<br>${dateLisible}</div>
+      <div class="info">Cette case fait partie d'une absence sur plusieurs jours.<br>Modifie-la depuis le tableau Absences.</div>
+    `;
+  } else {
+    popup.innerHTML = `
+      <div class="entete">${nomAgent}<br>${dateLisible}</div>
+      <div class="sousMoment">${estMatin ? 'Matin' : 'Après-midi'} sélectionné</div>
+    `;
+    const labelToggle = document.createElement('label');
+    labelToggle.className = 'toggle';
+    labelToggle.innerHTML = `<input type="checkbox" id="chkJourneeEntiere"> Toute la journée (matin + après-midi)`;
+    popup.appendChild(labelToggle);
+
+    TYPES.forEach(t => {
+      const btn = document.createElement('button');
+      const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
+      btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
+      btn.onclick = () => {
+        const journeeEntiere = document.getElementById('chkJourneeEntiere').checked;
+        enregistrerAbsence(agent, jTS, t.id, estMatin, journeeEntiere, absExistante);
+      };
+      popup.appendChild(btn);
+    });
+    if(absExistante){
+      const btnDel = document.createElement('button');
+      btnDel.className = 'supprimer';
+      btnDel.textContent = 'Effacer cette absence';
+      btnDel.onclick = () => supprimerAbsence(absExistante);
+      popup.appendChild(btnDel);
+    }
+  }
+
+  popup.style.display = 'block';
+  const rect = evt.target.getBoundingClientRect();
+  const largeurPopup = 220;
+  let gauche = rect.left;
+  if(gauche + largeurPopup > window.innerWidth) gauche = window.innerWidth - largeurPopup - 10;
+  popup.style.left = gauche + 'px';
+  popup.style.top = (rect.bottom + 4) + 'px';
+}
+
+document.addEventListener('click', (e) => {
+  const popup = document.getElementById('popup');
+  if(popup.style.display === 'block' && !popup.contains(e.target)){
+    fermerPopup();
+  }
+});
+
+async function enregistrerAbsence(agent, jTS, typeChoisi, estMatin, journeeEntiere, absExistante){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Enregistrement…';
+  try{
+    const ts = versTimestampGrist(jTS);
+
+    if(journeeEntiere){
+      // On nettoie d'abord toute absence existante ce jour-là (matin et après-midi) pour repartir propre
+      const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+      const idsASupprimer = new Set();
+      [true, false].forEach(m => {
+        const t = trouverAbsencePourMoitie(absencesAgent, jTS, m);
+        if(t && t.debTS === t.finTS) idsASupprimer.add(t.absence._id);
+      });
+      const actions = [...idsASupprimer].map(id => ['RemoveRecord', 'Absences', id]);
+      actions.push(['AddRecord', 'Absences', null, {
+        [clesAbs.agent]: agent._id,
+        [clesAbs.debut]: ts,
+        [clesAbs.fin]: ts,
+        [clesAbs.type]: typeChoisi
+      }]);
+      await grist.docApi.applyUserActions(actions);
+    } else if(absExistante){
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'Absences', absExistante._id, {[clesAbs.type]: typeChoisi}]
+      ]);
+    } else {
+      const valeurDemi = estMatin ? 'Matin' : 'Apres midi';
+      const champs = {
+        [clesAbs.agent]: agent._id,
+        [clesAbs.debut]: ts,
+        [clesAbs.fin]: ts,
+        [clesAbs.type]: typeChoisi
+      };
+      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = valeurDemi;
+      if(clesAbs.finDemi) champs[clesAbs.finDemi] = valeurDemi;
+      await grist.docApi.applyUserActions([
+        ['AddRecord', 'Absences', null, champs]
+      ]);
+    }
+  }catch(err){
+    alert("Erreur lors de l'enregistrement : " + err.message);
+  }
+}
+
+async function supprimerAbsence(absExistante){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Suppression…';
+  try{
+    await grist.docApi.applyUserActions([
+      ['RemoveRecord', 'Absences', absExistante._id]
+    ]);
+  }catch(err){
+    alert('Erreur lors de la suppression : ' + err.message);
+  }
 }
 
 // ---------- Événements ----------
