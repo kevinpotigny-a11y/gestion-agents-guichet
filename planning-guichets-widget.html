@@ -10,6 +10,7 @@
     --rouge: #B23A32;
     --violet: #D8C7F0;
     --ambre: #F4A340;
+    --vert-vacances: #D3EFD0;
     --bordure: #DADDE1;
     --texte: #2A2E33;
     --fond: #FAFBFC;
@@ -80,6 +81,7 @@
     height:28px;
   }
   th.nouvelleSemaine, td.nouvelleSemaine{ border-left:2px solid #9AA3AD; }
+  th.vacances{ background:var(--vert-vacances) !important; }
   th.colAgent, td.colAgent{
     min-width:170px;
     text-align:left;
@@ -90,7 +92,11 @@
     z-index:10;
     font-weight:500;
     white-space:nowrap;
+    cursor:pointer;
   }
+  th.colAgent:hover, td.colAgent:hover{ text-decoration:underline; }
+  tr.ligneActive td.colAgent{ background:#FFF3D6; }
+  tr.ligneActive td.cellule{ box-shadow: inset 0 0 0 9999px rgba(255,214,102,0.12); }
   thead th{
     position:sticky;
     top:0;
@@ -102,6 +108,7 @@
   thead th.colAgent{
     z-index:25;
     background:#EEF1F4;
+    cursor:default;
   }
   thead tr.joursSemaine th{ font-size:10px; color:#6B7280; font-weight:400; }
   tr.groupe td{
@@ -112,7 +119,13 @@
     position:sticky;
     left:0;
   }
-  td.cellule{ padding:0; }
+  tr.sousSeparateur td{
+    border-top:2px solid #9AA3AD;
+    padding:0;
+    height:0;
+    line-height:0;
+  }
+  td.cellule{ padding:0; position:relative; }
   .moitie{
     height:50%;
     cursor:pointer;
@@ -122,18 +135,20 @@
   .moitie.matin{ border-bottom:1px dashed rgba(0,0,0,0.12); }
   .moitie.conges{ background:var(--cyan); }
   .moitie.formation{ background:var(--rouge); }
-  .moitie.teletravail{ background:#F3F4F6; }
-  .moitie.teletravail::after{
-    content:"T";
-    font-size:9px;
-    color:#6B7280;
-    position:absolute;
-    right:2px;
-    top:50%;
-    transform:translateY(-50%);
-  }
+  .moitie.teletravail{ background:transparent; }
   .moitie.tempspartiel{ background:var(--ambre); }
   .moitie.autres{ background:var(--violet); }
+  .lettreT{
+    position:absolute;
+    left:0; right:0; top:0; bottom:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:11px;
+    font-weight:400;
+    color:#8A93A0;
+    pointer-events:none;
+  }
   .aujourdhui{ box-shadow: inset 0 0 0 2px #1F2933; }
   #legende{
     display:flex;
@@ -228,16 +243,15 @@
 <div id="legende">
   <span class="puce"><span class="carre" style="background:var(--cyan);"></span>Congés / RTT</span>
   <span class="puce"><span class="carre" style="background:var(--rouge);"></span>Formation</span>
-  <span class="puce"><span class="carre" style="background:#F3F4F6;">T</span>Télétravail</span>
+  <span class="puce"><span class="carre" style="background:white;">T</span>Télétravail</span>
   <span class="puce"><span class="carre" style="background:var(--ambre);"></span>Temps partiel</span>
   <span class="puce"><span class="carre" style="background:var(--violet);"></span>Autres</span>
-  <span style="margin-left:auto;color:#6B7280;">Clique en haut (matin) ou en bas (après-midi) d'une case</span>
+  <span class="puce"><span class="carre" style="background:var(--vert-vacances);"></span>Vacances scolaires</span>
 </div>
 
 <div id="popup"></div>
 
 <script>
-// ---------- Utilitaires ----------
 function normalise(s){
   return (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 }
@@ -289,7 +303,27 @@ const TYPES = [
   {id:'Autres', classe:'autres', var:'violet', libelle:'Autres'}
 ];
 
-// ---------- État ----------
+const ORDRE_POLES = ['direction', 'polesejour', 'polecontentieux', 'poleeloignement', 'poletransverse', 'pointdaccueilnumerique'];
+
+const VACANCES_SCOLAIRES = [
+  {debut: '2026-07-04', fin: '2026-09-01', libelle: "Vacances d'été 2026"},
+  {debut: '2026-10-17', fin: '2026-11-02', libelle: 'Vacances de la Toussaint 2026'},
+  {debut: '2026-12-19', fin: '2027-01-04', libelle: 'Vacances de Noël 2026'},
+  {debut: '2027-02-13', fin: '2027-03-01', libelle: "Vacances d'hiver 2027"},
+  {debut: '2027-04-10', fin: '2027-04-26', libelle: 'Vacances de printemps 2027'},
+  {debut: '2027-05-07', fin: '2027-05-07', libelle: "Pont de l'Ascension 2027"},
+  {debut: '2027-07-03', fin: '2027-09-01', libelle: "Vacances d'été 2027"}
+];
+
+function estVacancesScolaires(d){
+  const ts = jourUTC(d);
+  return VACANCES_SCOLAIRES.some(v => {
+    const debTS = jourUTC(new Date(v.debut + 'T00:00:00Z'));
+    const finTS = jourUTC(new Date(v.fin + 'T00:00:00Z'));
+    return ts >= debTS && ts <= finTS;
+  });
+}
+
 let moisCourant = new Date();
 moisCourant.setDate(1);
 let agents = [];
@@ -298,11 +332,11 @@ let clesAgent = {};
 let clesAbs = {};
 let poleActif = '';
 let guichetSeulement = false;
+let agentSurligne = null;
 
 const NOMS_MOIS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
 const JOURS = ['L','M','M','J','V'];
 
-// ---------- Chargement ----------
 grist.ready({requiredAccess: 'full'});
 
 async function chargerDonnees(){
@@ -362,9 +396,21 @@ async function chargerDonnees(){
 function remplirFiltrePole(){
   const sel = document.getElementById('filtrePole');
   const valeurActuelle = sel.value;
-  const poles = [...new Set(agents.map(a => a[clesAgent.pole]).filter(Boolean))].sort();
-  sel.innerHTML = '<option value="">Tous les pôles</option>' + poles.map(p => `<option value="${p}">${p}</option>`).join('');
+  const poles = [...new Set(agents.map(a => a[clesAgent.pole]).filter(Boolean))];
+  const poleOrdonnes = trierPoles(poles);
+  sel.innerHTML = '<option value="">Tous les pôles</option>' + poleOrdonnes.map(p => `<option value="${p}">${p}</option>`).join('');
   sel.value = valeurActuelle;
+}
+
+function trierPoles(listePoles){
+  return [...listePoles].sort((a, b) => {
+    const ia = ORDRE_POLES.indexOf(normalise(a));
+    const ib = ORDRE_POLES.indexOf(normalise(b));
+    if(ia === -1 && ib === -1) return a.localeCompare(b);
+    if(ia === -1) return 1;
+    if(ib === -1) return -1;
+    return ia - ib;
+  });
 }
 
 function typeVersClasse(type){
@@ -376,7 +422,6 @@ function typeVersClasse(type){
   return 'autres';
 }
 
-// Détermine si le matin / l'après-midi d'un jour donné sont couverts par une absence
 function demiJourActives(ab, jTS, debTS, finTS){
   let matin = true, apresmidi = true;
   if(jTS === debTS && clesAbs.debutDemi){
@@ -404,7 +449,6 @@ function trouverAbsencePourMoitie(absencesAgent, jTS, estMatin){
   return null;
 }
 
-// ---------- Rendu ----------
 function dessiner(){
   fermerPopup();
   const annee = moisCourant.getFullYear();
@@ -433,7 +477,20 @@ function dessiner(){
     if(!groupes[p]) groupes[p] = [];
     groupes[p].push(a);
   });
-  Object.values(groupes).forEach(liste => liste.sort((x,y) => (x[clesAgent.nom]||'').localeCompare(y[clesAgent.nom]||'')));
+
+  const nomsGroupesOrdonnes = trierPoles(Object.keys(groupes));
+
+  nomsGroupesOrdonnes.forEach(nomGroupe => {
+    const estPoleSejour = normalise(nomGroupe).includes('polesejour');
+    groupes[nomGroupe].sort((x, y) => {
+      if(estPoleSejour){
+        const gx = x[clesAgent.guichet] ? 0 : 1;
+        const gy = y[clesAgent.guichet] ? 0 : 1;
+        if(gx !== gy) return gx - gy;
+      }
+      return (x[clesAgent.nom]||'').localeCompare(y[clesAgent.nom]||'');
+    });
+  });
 
   function estDebutSemaine(d){ return d.getUTCDay() === 1; }
 
@@ -450,6 +507,7 @@ function dessiner(){
     th.textContent = d.getUTCDate();
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
     if(jourUTC(d) === aujourdhui) th.classList.add('aujourdhui');
+    if(estVacancesScolaires(d)) th.classList.add('vacances');
     trJours.appendChild(th);
   });
   thead.appendChild(trJours);
@@ -460,6 +518,7 @@ function dessiner(){
     const th = document.createElement('th');
     th.textContent = JOURS[d.getUTCDay()-1];
     if(estDebutSemaine(d)) th.classList.add('nouvelleSemaine');
+    if(estVacancesScolaires(d)) th.classList.add('vacances');
     trLettres.appendChild(th);
   });
   thead.appendChild(trLettres);
@@ -467,7 +526,7 @@ function dessiner(){
   const tbody = document.querySelector('#grille tbody');
   tbody.innerHTML = '';
 
-  Object.keys(groupes).sort().forEach(nomGroupe => {
+  nomsGroupesOrdonnes.forEach(nomGroupe => {
     const trGroupe = document.createElement('tr');
     trGroupe.className = 'groupe';
     const tdGroupe = document.createElement('td');
@@ -476,11 +535,33 @@ function dessiner(){
     trGroupe.appendChild(tdGroupe);
     tbody.appendChild(trGroupe);
 
+    const estPoleSejour = normalise(nomGroupe).includes('polesejour');
+    let dernierEtaitGuichet = null;
+
     groupes[nomGroupe].forEach(agent => {
+      if(estPoleSejour){
+        const estGuichet = !!agent[clesAgent.guichet];
+        if(dernierEtaitGuichet === true && estGuichet === false){
+          const trSep = document.createElement('tr');
+          trSep.className = 'sousSeparateur';
+          const tdSep = document.createElement('td');
+          tdSep.colSpan = jours.length + 1;
+          trSep.appendChild(tdSep);
+          tbody.appendChild(trSep);
+        }
+        dernierEtaitGuichet = estGuichet;
+      }
+
       const tr = document.createElement('tr');
+      if(agentSurligne === agent._id) tr.classList.add('ligneActive');
+
       const tdNom = document.createElement('td');
       tdNom.className = 'colAgent';
       tdNom.textContent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
+      tdNom.onclick = () => {
+        agentSurligne = (agentSurligne === agent._id) ? null : agent._id;
+        dessiner();
+      };
       tr.appendChild(tdNom);
 
       const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
@@ -492,6 +573,8 @@ function dessiner(){
         if(estDebutSemaine(d)) td.classList.add('nouvelleSemaine');
         if(jTS === aujourdhui) td.classList.add('aujourdhui');
 
+        let uneEstTeletravail = false;
+
         [true, false].forEach(estMatin => {
           const div = document.createElement('div');
           div.className = 'moitie ' + (estMatin ? 'matin' : 'apresmidi');
@@ -500,7 +583,9 @@ function dessiner(){
           let absExistante = null;
           if(trouve){
             const type = trouve.absence[clesAbs.type];
-            div.classList.add(typeVersClasse(type));
+            const classe = typeVersClasse(type);
+            div.classList.add(classe);
+            if(classe === 'teletravail') uneEstTeletravail = true;
             verrouillee = trouve.debTS !== trouve.finTS;
             absExistante = trouve.absence;
             div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
@@ -511,6 +596,13 @@ function dessiner(){
           td.appendChild(div);
         });
 
+        if(uneEstTeletravail){
+          const lettre = document.createElement('div');
+          lettre.className = 'lettreT';
+          lettre.textContent = 'T';
+          td.appendChild(lettre);
+        }
+
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -518,7 +610,6 @@ function dessiner(){
   });
 }
 
-// ---------- Interaction (popup) ----------
 function fermerPopup(){
   document.getElementById('popup').style.display = 'none';
 }
@@ -586,7 +677,6 @@ async function enregistrerAbsence(agent, jTS, typeChoisi, estMatin, journeeEntie
     const ts = versTimestampGrist(jTS);
 
     if(journeeEntiere){
-      // On nettoie d'abord toute absence existante ce jour-là (matin et après-midi) pour repartir propre
       const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
       const idsASupprimer = new Set();
       [true, false].forEach(m => {
@@ -636,7 +726,6 @@ async function supprimerAbsence(absExistante){
   }
 }
 
-// ---------- Événements ----------
 document.getElementById('btnPrev').onclick = () => {
   moisCourant.setMonth(moisCourant.getMonth() - 1);
   dessiner();
