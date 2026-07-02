@@ -241,6 +241,29 @@
   }
   #popup .groupeRadio .titreRadio{ font-weight:600; margin-bottom:3px; }
   #popup .groupeRadio label{ display:inline-flex; align-items:center; gap:4px; margin-right:12px; font-weight:400; cursor:pointer; }
+  #popup .champ{
+    padding:4px 6px 8px;
+    font-size:12px;
+  }
+  #popup .champ label{ display:block; font-weight:600; margin-bottom:3px; }
+  #popup .champ select, #popup .champ input[type="date"]{
+    width:100%;
+    padding:5px 6px;
+    border:1px solid var(--bordure);
+    border-radius:5px;
+    font-size:12px;
+    box-sizing:border-box;
+  }
+  #popup .lignerDates{ display:flex; gap:6px; }
+  #popup .lignerDates > div{ flex:1; }
+  #popup .joursSemaineChoix{
+    padding:4px 6px 8px;
+    font-size:12px;
+    border-bottom:1px solid var(--bordure);
+    margin-bottom:4px;
+  }
+  #popup .joursSemaineChoix label{ display:inline-flex; align-items:center; gap:3px; margin-right:8px; font-weight:400; cursor:pointer; }
+  #popup.large{ min-width:280px; max-height:80vh; overflow-y:auto; }
 </style>
 </head>
 <body>
@@ -253,6 +276,7 @@
   <label style="display:flex;align-items:center;gap:5px;">
     <input type="checkbox" id="filtreGuichet"> Guichet uniquement
   </label>
+  <button id="btnAjouterAbsence">+ Enregistrer une absence</button>
   <div id="statut">Chargement…</div>
 </div>
 
@@ -796,6 +820,7 @@ function viderSurbrillance(){
 function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   evt.stopPropagation();
   const popup = document.getElementById('popup');
+  popup.classList.remove('large');
   const nomAgent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
   const dateLisible = new Date(jTS).toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', timeZone:'UTC'});
 
@@ -866,6 +891,7 @@ function ouvrirPopupMultiple(ligneMin, ligneMax, colMin, colMax, elementAncrage)
   const plusieursJours = jTSDebut !== jTSFin;
 
   const popup = document.getElementById('popup');
+  popup.classList.remove('large');
   const nbCases = agentsSel.length + ' agent' + (agentsSel.length > 1 ? 's' : '') + ' × ' + joursSel.length + ' jour' + (joursSel.length > 1 ? 's' : '');
   popup.innerHTML = `<div class="entete">Sélection multiple<br><span style="font-weight:400;">${nbCases}</span></div>`;
 
@@ -1016,6 +1042,184 @@ async function enregistrerAbsenceMultiple(evaluationsRetenues, jTSDebut, jTSFin,
       };
       if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = debutDemi;
       if(clesAbs.finDemi) champs[clesAbs.finDemi] = finDemi;
+      actions.push(['AddRecord', 'Absences', null, champs]);
+    });
+    await grist.docApi.applyUserActions(actions);
+  }catch(err){
+    alert("Erreur lors de l'enregistrement : " + err.message);
+  }
+}
+
+// ---------- Modale générale (bouton "Enregistrer une absence") ----------
+function ouvrirModaleGenerale(){
+  glisser.actif = false;
+  const popup = document.getElementById('popup');
+  popup.classList.add('large');
+
+  const agentsTries = [...agents].sort((a,b) => (a[clesAgent.nom]||'').localeCompare(b[clesAgent.nom]||''));
+
+  popup.innerHTML = `<div class="entete">Enregistrer une absence</div>`;
+
+  const champAgent = document.createElement('div');
+  champAgent.className = 'champ';
+  champAgent.innerHTML = `
+    <label>Agent</label>
+    <select id="selAgentModale">
+      ${agentsTries.map(a => `<option value="${a._id}">${(a[clesAgent.nom]||'')}${clesAgent.prenom && a[clesAgent.prenom] ? ' ' + a[clesAgent.prenom] : ''}</option>`).join('')}
+    </select>
+  `;
+  popup.appendChild(champAgent);
+
+  const champDates = document.createElement('div');
+  champDates.className = 'champ';
+  const aujourdhuiStr = new Date().toISOString().slice(0,10);
+  champDates.innerHTML = `
+    <label>Période</label>
+    <div class="lignerDates">
+      <div><input type="date" id="dateDebutModale" value="${aujourdhuiStr}"></div>
+      <div><input type="date" id="dateFinModale" value="${aujourdhuiStr}"></div>
+    </div>
+  `;
+  popup.appendChild(champDates);
+
+  const labelRecurrence = document.createElement('label');
+  labelRecurrence.className = 'toggle';
+  labelRecurrence.innerHTML = `<input type="checkbox" id="chkRecurrenceModale"> Se répète chaque semaine sur cette période`;
+  popup.appendChild(labelRecurrence);
+
+  const zoneJoursSemaine = document.createElement('div');
+  zoneJoursSemaine.className = 'joursSemaineChoix';
+  zoneJoursSemaine.style.display = 'none';
+  zoneJoursSemaine.innerHTML = `
+    <div class="titreRadio" style="font-weight:600; margin-bottom:3px;">Jour(s) de la semaine</div>
+    <label><input type="checkbox" class="chkJourSemaine" value="1"> Lun</label>
+    <label><input type="checkbox" class="chkJourSemaine" value="2"> Mar</label>
+    <label><input type="checkbox" class="chkJourSemaine" value="3"> Mer</label>
+    <label><input type="checkbox" class="chkJourSemaine" value="4"> Jeu</label>
+    <label><input type="checkbox" class="chkJourSemaine" value="5"> Ven</label>
+  `;
+  popup.appendChild(zoneJoursSemaine);
+
+  const zoneMoment = document.createElement('div');
+  zoneMoment.className = 'groupeRadio';
+  zoneMoment.innerHTML = `
+    <div class="titreRadio">Moment (pour chaque jour concerné)</div>
+    <label><input type="radio" name="radioMomentModale" value="entiere" checked> Toute la journée</label>
+    <label><input type="radio" name="radioMomentModale" value="matin"> Matin</label>
+    <label><input type="radio" name="radioMomentModale" value="apresmidi"> Après-midi</label>
+  `;
+  popup.appendChild(zoneMoment);
+
+  document.getElementById('chkRecurrenceModale').onchange = (e) => {
+    zoneJoursSemaine.style.display = e.target.checked ? 'block' : 'none';
+  };
+
+  TYPES.forEach(t => {
+    const btn = document.createElement('button');
+    const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
+    btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
+    btn.onclick = () => lancerEnregistrementDepuisModale(t);
+    popup.appendChild(btn);
+  });
+
+  const btnAnnuler = document.createElement('button');
+  btnAnnuler.textContent = 'Annuler';
+  btnAnnuler.onclick = () => fermerPopup();
+  popup.appendChild(btnAnnuler);
+
+  popup.style.display = 'block';
+  const rect = document.getElementById('btnAjouterAbsence').getBoundingClientRect();
+  popup.style.left = rect.left + 'px';
+  popup.style.top = (rect.bottom + 6) + 'px';
+}
+
+function lancerEnregistrementDepuisModale(typeChoisi){
+  const agentId = parseInt(document.getElementById('selAgentModale').value, 10);
+  const agent = agents.find(a => a._id === agentId);
+  const valDebut = document.getElementById('dateDebutModale').value;
+  const valFin = document.getElementById('dateFinModale').value || valDebut;
+  if(!valDebut){ alert('Merci de renseigner une date de début.'); return; }
+
+  const jTSDebut = jourUTC(new Date(valDebut + 'T00:00:00Z'));
+  const jTSFin = jourUTC(new Date(valFin + 'T00:00:00Z'));
+  if(jTSFin < jTSDebut){ alert('La date de fin doit être après la date de début.'); return; }
+
+  const recurrence = document.getElementById('chkRecurrenceModale').checked;
+  const moment = document.querySelector('input[name="radioMomentModale"]:checked').value;
+  let debutDemiJour = '', finDemiJour = '';
+  if(moment === 'matin'){ finDemiJour = 'Matin'; }
+  else if(moment === 'apresmidi'){ debutDemiJour = 'Apres midi'; }
+
+  let occurrences = [];
+
+  if(recurrence){
+    const joursCoches = [...document.querySelectorAll('.chkJourSemaine:checked')].map(c => parseInt(c.value, 10));
+    if(joursCoches.length === 0){ alert('Sélectionne au moins un jour de la semaine pour la récurrence.'); return; }
+    joursEntre(jTSDebut, jTSFin).forEach(j => {
+      const dateJ = new Date(j);
+      if(joursCoches.includes(dateJ.getUTCDay())){
+        occurrences.push({jTSDebut: j, jTSFin: j, debutDemi: debutDemiJour, finDemi: finDemiJour});
+      }
+    });
+    if(occurrences.length === 0){ alert("Aucun jour ne correspond à ces critères sur la période choisie."); return; }
+  } else {
+    occurrences.push({jTSDebut, jTSFin, debutDemi: debutDemiJour, finDemi: finDemiJour});
+  }
+
+  proposerEnregistrementOccurrences(agent, occurrences, typeChoisi);
+}
+
+function proposerEnregistrementOccurrences(agent, occurrences, typeChoisi){
+  const evaluations = occurrences.map(occ => {
+    const resultat = evaluerActionMultiple([agent], occ.jTSDebut, occ.jTSFin, occ.debutDemi, occ.finDemi, typeChoisi.id)[0];
+    return {occ, ...resultat};
+  });
+  const ignores = evaluations.filter(e => e.verrouille);
+  const avecConflit = evaluations.filter(e => !e.verrouille && e.conflits.length > 0);
+  const sansConflit = evaluations.filter(e => !e.verrouille && e.conflits.length === 0);
+
+  if(avecConflit.length === 0 && ignores.length === 0){
+    enregistrerOccurrences(agent, [...sansConflit, ...avecConflit], typeChoisi.id);
+    return;
+  }
+
+  const popup = document.getElementById('popup');
+  const nomAgent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
+  let html = `<div class="entete">Confirmation nécessaire<br><span style="font-weight:400;">${nomAgent}</span></div>`;
+  if(avecConflit.length > 0){
+    html += `<div class="info">⚠ ${avecConflit.length} jour(s) ont déjà une absence différente, elle sera remplacée par <strong>${typeChoisi.libelle}</strong>.</div>`;
+  }
+  if(ignores.length > 0){
+    html += `<div class="info">ℹ ${ignores.length} jour(s) ignoré(s) car déjà dans une absence multi-jours existante (à modifier depuis le tableau).</div>`;
+  }
+  popup.innerHTML = html;
+
+  const btnConfirmer = document.createElement('button');
+  btnConfirmer.textContent = 'Confirmer';
+  btnConfirmer.style.color = 'var(--rouge)';
+  btnConfirmer.onclick = () => enregistrerOccurrences(agent, [...sansConflit, ...avecConflit], typeChoisi.id);
+  popup.appendChild(btnConfirmer);
+  const btnAnnuler = document.createElement('button');
+  btnAnnuler.textContent = 'Annuler';
+  btnAnnuler.onclick = () => fermerPopup();
+  popup.appendChild(btnAnnuler);
+}
+
+async function enregistrerOccurrences(agent, evaluationsRetenues, typeChoisiId){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Enregistrement…';
+  try{
+    const actions = [];
+    evaluationsRetenues.forEach(e => {
+      e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
+      const champs = {
+        [clesAbs.agent]: agent._id,
+        [clesAbs.debut]: versTimestampGrist(e.occ.jTSDebut),
+        [clesAbs.fin]: versTimestampGrist(e.occ.jTSFin),
+        [clesAbs.type]: typeChoisiId
+      };
+      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = e.occ.debutDemi;
+      if(clesAbs.finDemi) champs[clesAbs.finDemi] = e.occ.finDemi;
       actions.push(['AddRecord', 'Absences', null, champs]);
     });
     await grist.docApi.applyUserActions(actions);
@@ -1242,6 +1446,10 @@ document.getElementById('filtrePole').onchange = (e) => {
 document.getElementById('filtreGuichet').onchange = (e) => {
   guichetSeulement = e.target.checked;
   dessiner();
+};
+document.getElementById('btnAjouterAbsence').onclick = (e) => {
+  e.stopPropagation();
+  ouvrirModaleGenerale();
 };
 
 grist.onRecords(() => { chargerDonnees(); });
