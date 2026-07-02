@@ -609,6 +609,7 @@ function dessiner(){
     if(js){
       if(js.categorie === 'jourferie' || js.categorie === 'fermeturepref') th.classList.add('ferme');
       else if(js.categorie === 'fermeturepublic') th.classList.add('fermeturePublic');
+      th.title = js.libelle || '';
     }
     trLettres.appendChild(th);
   });
