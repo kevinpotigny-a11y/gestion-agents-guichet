@@ -89,6 +89,7 @@
   }
   td.ferme .moitie{ cursor:not-allowed; }
   th.fermeturePublic{ background:#FCE8CC !important; }
+  td.fermeturePublic{ background:rgba(252,232,204,0.55); }
   .puceRappel{
     display:inline-block;
     font-size:10px;
@@ -672,6 +673,7 @@ function dessiner(){
         const jourSpecial = trouverJourSpecial(jTS);
         const estFerme = jourSpecial && (jourSpecial.categorie === 'jourferie' || jourSpecial.categorie === 'fermeturepref');
         if(estFerme) td.classList.add('ferme');
+        if(jourSpecial && jourSpecial.categorie === 'fermeturepublic') td.classList.add('fermeturePublic');
 
         let uneEstTeletravail = false;
 
@@ -691,6 +693,8 @@ function dessiner(){
             div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
           } else if(estFerme){
             div.title = jourSpecial.libelle || 'Jour fermé';
+          } else if(jourSpecial && jourSpecial.categorie === 'fermeturepublic'){
+            div.title = (jourSpecial.libelle || 'Fermeture au public') + ' — les agents restent planifiables';
           } else {
             div.title = 'Cliquer, ou cliquer-glisser pour sélectionner plusieurs cases (' + (estMatin ? 'matin' : 'après-midi') + ')';
           }
