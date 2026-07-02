@@ -71,7 +71,9 @@
     border-collapse:separate;
     border-spacing:0;
     width:100%;
+    user-select:none;
   }
+  td.cellule.enSelection{ box-shadow: inset 0 0 0 9999px rgba(31,41,51,0.18); }
   th, td{
     border-right:1px solid var(--bordure);
     border-bottom:1px solid var(--bordure);
@@ -220,6 +222,14 @@
     color:#6B7280;
     padding:4px 6px 2px;
   }
+  #popup .groupeRadio{
+    padding:4px 6px 8px;
+    font-size:12px;
+    border-bottom:1px solid var(--bordure);
+    margin-bottom:4px;
+  }
+  #popup .groupeRadio .titreRadio{ font-weight:600; margin-bottom:3px; }
+  #popup .groupeRadio label{ display:inline-flex; align-items:center; gap:4px; margin-right:12px; font-weight:400; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -333,6 +343,13 @@ let clesAbs = {};
 let poleActif = '';
 let guichetSeulement = false;
 let agentSurligne = null;
+let ignorerProchainClicDocument = false;
+let joursCourants = [];
+let lignesRendues = [];
+let cellulesParPosition = {};
+let glisser = {actif:false, ligneDebut:null, colDebut:null, ligneFin:null, colFin:null,
+  agentOrigine:null, jTSOrigine:null, estMatinOrigine:null, absExistanteOrigine:null,
+  verrouilleeOrigine:null, elementOrigine:null};
 
 const NOMS_MOIS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
 const JOURS = ['L','M','M','J','V'];
@@ -455,6 +472,9 @@ function trouverAbsencePourMoitie(absencesAgent, jTS, estMatin){
 
 function dessiner(){
   fermerPopup();
+  joursCourants = [];
+  lignesRendues = [];
+  cellulesParPosition = {};
   const annee = moisCourant.getFullYear();
   const mois = moisCourant.getMonth();
   document.getElementById('titreMois').textContent = NOMS_MOIS[mois] + ' ' + annee;
@@ -468,6 +488,7 @@ function dessiner(){
     jours.push(d);
   }
   const aujourdhui = jourUTC(new Date());
+  joursCourants = jours;
 
   let agentsAffiches = agents.filter(a => {
     if(poleActif && a[clesAgent.pole] !== poleActif) return false;
@@ -562,6 +583,8 @@ function dessiner(){
 
       const tr = document.createElement('tr');
       if(agentSurligne === agent._id) tr.classList.add('ligneActive');
+      const ligneIndex = lignesRendues.length;
+      lignesRendues.push(agent);
 
       const tdNom = document.createElement('td');
       tdNom.className = 'colAgent';
@@ -574,9 +597,12 @@ function dessiner(){
 
       const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
 
-      jours.forEach(d => {
+      jours.forEach((d, colIndex) => {
         const td = document.createElement('td');
         td.className = 'cellule';
+        td.dataset.ligne = ligneIndex;
+        td.dataset.col = colIndex;
+        cellulesParPosition[ligneIndex + '_' + colIndex] = td;
         const jTS = jourUTC(d);
         if(estDebutSemaine(d)) td.classList.add('nouvelleSemaine');
         if(jTS === aujourdhui) td.classList.add('aujourdhui');
@@ -598,9 +624,9 @@ function dessiner(){
             absExistante = trouve.absence;
             div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
           } else {
-            div.title = 'Cliquer pour ajouter une absence (' + (estMatin ? 'matin' : 'après-midi') + ')';
+            div.title = 'Cliquer, ou cliquer-glisser pour sélectionner plusieurs cases (' + (estMatin ? 'matin' : 'après-midi') + ')';
           }
-          div.onclick = (e) => ouvrirPopup(e, agent, jTS, absExistante, verrouillee, estMatin);
+          div.onmousedown = (e) => demarrerGlisser(e, agent, jTS, ligneIndex, colIndex, estMatin, absExistante, verrouillee);
           td.appendChild(div);
         });
 
@@ -620,7 +646,78 @@ function dessiner(){
 
 function fermerPopup(){
   document.getElementById('popup').style.display = 'none';
+  viderSurbrillance();
 }
+function demarrerGlisser(e, agent, jTS, ligneIndex, colIndex, estMatin, absExistante, verrouillee){
+  if(e.button !== 0) return; // clic gauche uniquement
+  e.preventDefault();
+  glisser = {
+    actif: true,
+    ligneDebut: ligneIndex, colDebut: colIndex,
+    ligneFin: ligneIndex, colFin: colIndex,
+    agentOrigine: agent, jTSOrigine: jTS, estMatinOrigine: estMatin,
+    absExistanteOrigine: absExistante, verrouilleeOrigine: verrouillee,
+    elementOrigine: e.target
+  };
+  mettreAJourSurbrillance();
+  document.addEventListener('mousemove', gererMouseMoveGlisser);
+  document.addEventListener('mouseup', gererMouseUpGlisser);
+}
+
+function gererMouseMoveGlisser(e){
+  if(!glisser.actif) return;
+  const cible = document.elementFromPoint(e.clientX, e.clientY);
+  const td = cible && cible.closest ? cible.closest('td.cellule') : null;
+  if(!td || td.dataset.ligne === undefined) return;
+  const ligne = parseInt(td.dataset.ligne, 10);
+  const col = parseInt(td.dataset.col, 10);
+  if(ligne === glisser.ligneFin && col === glisser.colFin) return;
+  glisser.ligneFin = ligne;
+  glisser.colFin = col;
+  mettreAJourSurbrillance();
+}
+
+function gererMouseUpGlisser(e){
+  document.removeEventListener('mousemove', gererMouseMoveGlisser);
+  document.removeEventListener('mouseup', gererMouseUpGlisser);
+  if(!glisser.actif) return;
+  glisser.actif = false;
+
+  const estClicSimple = (glisser.ligneDebut === glisser.ligneFin && glisser.colDebut === glisser.colFin);
+
+  if(estClicSimple){
+    viderSurbrillance();
+    ignorerProchainClicDocument = true;
+    const evtSynthetique = {target: glisser.elementOrigine, stopPropagation(){}};
+    ouvrirPopup(evtSynthetique, glisser.agentOrigine, glisser.jTSOrigine, glisser.absExistanteOrigine, glisser.verrouilleeOrigine, glisser.estMatinOrigine);
+  } else {
+    const ligneMin = Math.min(glisser.ligneDebut, glisser.ligneFin);
+    const ligneMax = Math.max(glisser.ligneDebut, glisser.ligneFin);
+    const colMin = Math.min(glisser.colDebut, glisser.colFin);
+    const colMax = Math.max(glisser.colDebut, glisser.colFin);
+    ignorerProchainClicDocument = true;
+    ouvrirPopupMultiple(ligneMin, ligneMax, colMin, colMax, glisser.elementOrigine);
+  }
+}
+
+function mettreAJourSurbrillance(){
+  viderSurbrillance();
+  const ligneMin = Math.min(glisser.ligneDebut, glisser.ligneFin);
+  const ligneMax = Math.max(glisser.ligneDebut, glisser.ligneFin);
+  const colMin = Math.min(glisser.colDebut, glisser.colFin);
+  const colMax = Math.max(glisser.colDebut, glisser.colFin);
+  for(let l = ligneMin; l <= ligneMax; l++){
+    for(let c = colMin; c <= colMax; c++){
+      const td = cellulesParPosition[l + '_' + c];
+      if(td) td.classList.add('enSelection');
+    }
+  }
+}
+
+function viderSurbrillance(){
+  document.querySelectorAll('td.cellule.enSelection').forEach(td => td.classList.remove('enSelection'));
+}
+
 
 function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   evt.stopPropagation();
@@ -686,6 +783,173 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin){
   popup.style.top = (rect.bottom + 4) + 'px';
 }
 
+// ---------- Sélection multiple (clic-glisser) ----------
+function ouvrirPopupMultiple(ligneMin, ligneMax, colMin, colMax, elementAncrage){
+  const agentsSel = lignesRendues.slice(ligneMin, ligneMax + 1);
+  const joursSel = joursCourants.slice(colMin, colMax + 1);
+  const jTSDebut = jourUTC(joursSel[0]);
+  const jTSFin = jourUTC(joursSel[joursSel.length - 1]);
+  const plusieursJours = jTSDebut !== jTSFin;
+
+  const popup = document.getElementById('popup');
+  const nbCases = agentsSel.length + ' agent' + (agentsSel.length > 1 ? 's' : '') + ' × ' + joursSel.length + ' jour' + (joursSel.length > 1 ? 's' : '');
+  popup.innerHTML = `<div class="entete">Sélection multiple<br><span style="font-weight:400;">${nbCases}</span></div>`;
+
+  if(plusieursJours){
+    const debutLisible = joursSel[0].toLocaleDateString('fr-FR', {day:'numeric', month:'long', timeZone:'UTC'});
+    const finLisible = joursSel[joursSel.length-1].toLocaleDateString('fr-FR', {day:'numeric', month:'long', timeZone:'UTC'});
+    const groupeDebut = document.createElement('div');
+    groupeDebut.className = 'groupeRadio';
+    groupeDebut.innerHTML = `
+      <div class="titreRadio">Début de congé (${debutLisible})</div>
+      <label><input type="radio" name="radioDebut" value="Matin" checked> Matin</label>
+      <label><input type="radio" name="radioDebut" value="Apres midi"> Après-midi</label>
+    `;
+    popup.appendChild(groupeDebut);
+    const groupeFin = document.createElement('div');
+    groupeFin.className = 'groupeRadio';
+    groupeFin.innerHTML = `
+      <div class="titreRadio">Fin de congé — inclus (${finLisible})</div>
+      <label><input type="radio" name="radioFin" value="Apres midi" checked> Après-midi</label>
+      <label><input type="radio" name="radioFin" value="Matin"> Matin</label>
+    `;
+    popup.appendChild(groupeFin);
+  } else {
+    const groupe = document.createElement('div');
+    groupe.className = 'groupeRadio';
+    groupe.innerHTML = `
+      <div class="titreRadio">Moment de la journée</div>
+      <label><input type="radio" name="radioJour" value="entiere" checked> Toute la journée</label>
+      <label><input type="radio" name="radioJour" value="matin"> Matin</label>
+      <label><input type="radio" name="radioJour" value="apresmidi"> Après-midi</label>
+    `;
+    popup.appendChild(groupe);
+  }
+
+  TYPES.forEach(t => {
+    const btn = document.createElement('button');
+    const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
+    btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
+    btn.onclick = () => {
+      let debutDemi = '', finDemi = '';
+      if(plusieursJours){
+        debutDemi = document.querySelector('input[name="radioDebut"]:checked').value === 'Apres midi' ? 'Apres midi' : '';
+        finDemi = document.querySelector('input[name="radioFin"]:checked').value === 'Matin' ? 'Matin' : '';
+      } else {
+        const choix = document.querySelector('input[name="radioJour"]:checked').value;
+        if(choix === 'matin'){ debutDemi = ''; finDemi = 'Matin'; }
+        else if(choix === 'apresmidi'){ debutDemi = 'Apres midi'; finDemi = ''; }
+      }
+      proposerEnregistrementMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, t);
+    };
+    popup.appendChild(btn);
+  });
+
+  const btnAnnuler = document.createElement('button');
+  btnAnnuler.textContent = 'Annuler';
+  btnAnnuler.onclick = () => fermerPopup();
+  popup.appendChild(btnAnnuler);
+
+  popup.style.display = 'block';
+  const rect = elementAncrage.getBoundingClientRect();
+  const largeurPopup = 240;
+  let gauche = rect.left;
+  if(gauche + largeurPopup > window.innerWidth) gauche = window.innerWidth - largeurPopup - 10;
+  popup.style.left = gauche + 'px';
+  let haut = rect.bottom + 4;
+  if(haut + 320 > window.innerHeight) haut = Math.max(10, window.innerHeight - 330);
+  popup.style.top = haut + 'px';
+}
+
+// Évalue, pour chaque agent sélectionné, les conflits (type différent) et verrouillages (absence multi-jours existante)
+function evaluerActionMultiple(agentsSel, jTSDebut, jTSFin, debutDemiChoisi, finDemiChoisi, typeChoisiId){
+  const joursPeriode = joursEntre(jTSDebut, jTSFin);
+  return agentsSel.map(agent => {
+    const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+    let verrouille = false;
+    const conflits = [];
+    const idsExistants = new Set();
+    joursPeriode.forEach(j => {
+      let matinDemande = true, apresmidiDemande = true;
+      if(j === jTSDebut && debutDemiChoisi === 'Apres midi') matinDemande = false;
+      if(j === jTSFin && finDemiChoisi === 'Matin') apresmidiDemande = false;
+      [[true, matinDemande], [false, apresmidiDemande]].forEach(([estMatin, demande]) => {
+        if(!demande) return;
+        const trouve = trouverAbsencePourMoitie(absencesAgent, j, estMatin);
+        if(trouve){
+          if(trouve.debTS !== trouve.finTS){
+            verrouille = true;
+          } else {
+            idsExistants.add(trouve.absence._id);
+            if(normalise(trouve.absence[clesAbs.type]) !== normalise(typeChoisiId)){
+              conflits.push({jour: j, demi: estMatin ? 'matin' : 'après-midi', ancienType: trouve.absence[clesAbs.type]});
+            }
+          }
+        }
+      });
+    });
+    return {agent, conflits, verrouille, idsExistants};
+  });
+}
+
+function proposerEnregistrementMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi){
+  const evaluation = evaluerActionMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
+  const ignores = evaluation.filter(e => e.verrouille);
+  const avecConflit = evaluation.filter(e => !e.verrouille && e.conflits.length > 0);
+  const sansConflit = evaluation.filter(e => !e.verrouille && e.conflits.length === 0);
+
+  if(avecConflit.length === 0 && ignores.length === 0){
+    enregistrerAbsenceMultiple([...sansConflit, ...avecConflit], jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
+    return;
+  }
+
+  const popup = document.getElementById('popup');
+  const nomsAgent = (e) => (e.agent[clesAgent.nom]||'') + (clesAgent.prenom && e.agent[clesAgent.prenom] ? ' ' + e.agent[clesAgent.prenom] : '');
+  let html = `<div class="entete">Confirmation nécessaire</div>`;
+  if(avecConflit.length > 0){
+    const liste = avecConflit.slice(0, 6).map(e => nomsAgent(e)).join(', ') + (avecConflit.length > 6 ? ` +${avecConflit.length - 6} autres` : '');
+    html += `<div class="info">⚠ ${avecConflit.length} agent(s) ont déjà une absence différente sur cette période, elle sera remplacée par <strong>${typeChoisi.libelle}</strong> :<br>${liste}</div>`;
+  }
+  if(ignores.length > 0){
+    const liste = ignores.slice(0, 6).map(e => nomsAgent(e)).join(', ') + (ignores.length > 6 ? ` +${ignores.length - 6} autres` : '');
+    html += `<div class="info">ℹ ${ignores.length} agent(s) ignoré(s) car déjà dans une absence multi-jours existante (à modifier depuis le tableau) :<br>${liste}</div>`;
+  }
+  popup.innerHTML = html;
+
+  const btnConfirmer = document.createElement('button');
+  btnConfirmer.textContent = 'Confirmer';
+  btnConfirmer.style.color = 'var(--rouge)';
+  btnConfirmer.onclick = () => enregistrerAbsenceMultiple([...sansConflit, ...avecConflit], jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
+  popup.appendChild(btnConfirmer);
+  const btnAnnuler = document.createElement('button');
+  btnAnnuler.textContent = 'Annuler';
+  btnAnnuler.onclick = () => fermerPopup();
+  popup.appendChild(btnAnnuler);
+}
+
+async function enregistrerAbsenceMultiple(evaluationsRetenues, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisiId){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Enregistrement…';
+  try{
+    const actions = [];
+    evaluationsRetenues.forEach(e => {
+      e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
+      const champs = {
+        [clesAbs.agent]: e.agent._id,
+        [clesAbs.debut]: versTimestampGrist(jTSDebut),
+        [clesAbs.fin]: versTimestampGrist(jTSFin),
+        [clesAbs.type]: typeChoisiId
+      };
+      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = debutDemi;
+      if(clesAbs.finDemi) champs[clesAbs.finDemi] = finDemi;
+      actions.push(['AddRecord', 'Absences', null, champs]);
+    });
+    await grist.docApi.applyUserActions(actions);
+  }catch(err){
+    alert("Erreur lors de l'enregistrement : " + err.message);
+  }
+}
+
 // Vérifie si l'action envisagée écrase une absence existante d'un type différent,
 // ou touche une absence multi-jours (dans ce cas, action bloquée pour cette moitié).
 function evaluerAction(agent, jTS, typeChoisi, estMatin, journeeEntiere){
@@ -741,6 +1005,10 @@ function proposerEnregistrement(agent, jTS, typeChoisi, estMatin, journeeEntiere
 }
 
 document.addEventListener('click', (e) => {
+  if(ignorerProchainClicDocument){
+    ignorerProchainClicDocument = false;
+    return;
+  }
   const popup = document.getElementById('popup');
   if(popup.style.display === 'block' && !popup.contains(e.target)){
     fermerPopup();
