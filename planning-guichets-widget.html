@@ -198,7 +198,11 @@
     color:#5B6572;
     pointer-events:none;
   }
-  .aujourdhui{ box-shadow: inset 0 0 0 2px #1F2933; }
+  .lettreT.lettreTMatin{ bottom:50%; }
+  .lettreT.lettreTApresmidi{ top:50%; }
+  .aujourdhui{ border-left:2px solid #1F2933 !important; border-right:2px solid #1F2933 !important; }
+  .aujourdhuiHaut{ border-top:2px solid #1F2933 !important; }
+  .aujourdhuiBas{ border-bottom:2px solid #1F2933 !important; }
   #legende{
     display:flex;
     gap:16px;
@@ -558,6 +562,14 @@ function estSuperviseurGuichet(agent){
   return normalise(agent[clesAgent.role] || '').includes('superviseurguichet');
 }
 
+function estChefDeGroupe(agent){
+  return normalise(agent[clesAgent.role] || '').includes('chef');
+}
+
+function estChefDePole(agent){
+  return normalise(agent[clesAgent.role] || '').includes('chef');
+}
+
 function comptePourGuichet(agent){
   return !!agent[clesAgent.guichet] || estSuperviseurGuichet(agent);
 }
@@ -647,6 +659,9 @@ function dessiner(){
   nomsGroupesOrdonnes.forEach(nomGroupe => {
     const estPoleSejour = normalise(nomGroupe).includes('polesejour');
     groupes[nomGroupe].sort((x, y) => {
+      const chx = estChefDeGroupe(x) ? 0 : 1;
+      const chy = estChefDeGroupe(y) ? 0 : 1;
+      if(chx !== chy) return chx - chy;
       if(estPoleSejour){
         const gx = comptePourGuichet(x) ? 0 : 1;
         const gy = comptePourGuichet(y) ? 0 : 1;
@@ -798,19 +813,22 @@ function dessiner(){
         if(estFerme) td.classList.add('ferme');
         if(jourSpecial && jourSpecial.categorie === 'fermeturepublic') td.classList.add('fermeturePublic');
 
-        let uneEstTeletravail = false;
+        let teletravailMatin = false;
+        let teletravailApresmidi = false;
 
         [true, false].forEach(estMatin => {
           const div = document.createElement('div');
           div.className = 'moitie ' + (estMatin ? 'matin' : 'apresmidi');
-          const trouve = trouverAbsencePourMoitie(absencesAgent, jTS, estMatin);
+          const trouve = estFerme ? null : trouverAbsencePourMoitie(absencesAgent, jTS, estMatin);
           let verrouillee = false;
           let absExistante = null;
           if(trouve){
             const type = trouve.absence[clesAbs.type];
             const classe = typeVersClasse(type);
             div.classList.add(classe);
-            if(classe === 'teletravail') uneEstTeletravail = true;
+            if(classe === 'teletravail'){
+              if(estMatin) teletravailMatin = true; else teletravailApresmidi = true;
+            }
             verrouillee = trouve.debTS !== trouve.finTS;
             absExistante = trouve.absence;
             div.title = (agent[clesAgent.nom]||'') + ' — ' + type + ' (' + (estMatin ? 'matin' : 'après-midi') + ')' + (verrouillee ? ' — période multi-jours' : '');
@@ -827,9 +845,19 @@ function dessiner(){
           td.appendChild(div);
         });
 
-        if(uneEstTeletravail){
+        if(teletravailMatin && teletravailApresmidi){
           const lettre = document.createElement('div');
           lettre.className = 'lettreT';
+          lettre.textContent = 'T';
+          td.appendChild(lettre);
+        } else if(teletravailMatin){
+          const lettre = document.createElement('div');
+          lettre.className = 'lettreT lettreTMatin';
+          lettre.textContent = 'T';
+          td.appendChild(lettre);
+        } else if(teletravailApresmidi){
+          const lettre = document.createElement('div');
+          lettre.className = 'lettreT lettreTApresmidi';
           lettre.textContent = 'T';
           td.appendChild(lettre);
         }
@@ -1079,6 +1107,8 @@ function evaluerActionMultiple(agentsSel, jTSDebut, jTSFin, debutDemiChoisi, fin
         if(!demande) return;
         const trouve = trouverAbsencePourMoitie(absencesAgent, j, estMatin);
         if(trouve){
+          const estTempsPartiel = normalise(trouve.absence[clesAbs.type]).includes('tempspartiel');
+          if(estTempsPartiel) return; // on respecte le temps partiel, on ne le touche pas
           if(trouve.debTS !== trouve.finTS){
             verrouille = true;
           } else {
@@ -1136,15 +1166,18 @@ async function enregistrerAbsenceMultiple(evaluationsRetenues, jTSDebut, jTSFin,
     const actions = [];
     evaluationsRetenues.forEach(e => {
       e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
-      const champs = {
-        [clesAbs.agent]: e.agent._id,
-        [clesAbs.debut]: versTimestampGrist(jTSDebut),
-        [clesAbs.fin]: versTimestampGrist(jTSFin),
-        [clesAbs.type]: typeChoisiId
-      };
-      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = debutDemi;
-      if(clesAbs.finDemi) champs[clesAbs.finDemi] = finDemi;
-      actions.push(['AddRecord', 'Absences', null, champs]);
+      const fragments = construireFragmentsDemandes(e.agent, jTSDebut, jTSFin, debutDemi, finDemi);
+      fragments.forEach(f => {
+        const champs = {
+          [clesAbs.agent]: e.agent._id,
+          [clesAbs.debut]: versTimestampGrist(f.debut),
+          [clesAbs.fin]: versTimestampGrist(f.fin),
+          [clesAbs.type]: typeChoisiId
+        };
+        if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
+        if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
+        actions.push(['AddRecord', 'Absences', null, champs]);
+      });
     });
     await grist.docApi.applyUserActions(actions);
   }catch(err){
@@ -1338,15 +1371,18 @@ async function enregistrerOccurrences(agent, evaluationsRetenues, typeChoisiId){
     const actions = [];
     evaluationsRetenues.forEach(e => {
       e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
-      const champs = {
-        [clesAbs.agent]: agent._id,
-        [clesAbs.debut]: versTimestampGrist(e.occ.jTSDebut),
-        [clesAbs.fin]: versTimestampGrist(e.occ.jTSFin),
-        [clesAbs.type]: typeChoisiId
-      };
-      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = e.occ.debutDemi;
-      if(clesAbs.finDemi) champs[clesAbs.finDemi] = e.occ.finDemi;
-      actions.push(['AddRecord', 'Absences', null, champs]);
+      const fragments = construireFragmentsDemandes(agent, e.occ.jTSDebut, e.occ.jTSFin, e.occ.debutDemi, e.occ.finDemi);
+      fragments.forEach(f => {
+        const champs = {
+          [clesAbs.agent]: agent._id,
+          [clesAbs.debut]: versTimestampGrist(f.debut),
+          [clesAbs.fin]: versTimestampGrist(f.fin),
+          [clesAbs.type]: typeChoisiId
+        };
+        if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
+        if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
+        actions.push(['AddRecord', 'Absences', null, champs]);
+      });
     });
     await grist.docApi.applyUserActions(actions);
   }catch(err){
@@ -1472,25 +1508,9 @@ function joursEntre(debTS, finTS){
 }
 
 // Recalcule les fragments restants d'une absence après avoir retiré une demi-journée ou une journée
-function decomposerAbsence(absence, jTSRetire, portee){
-  const deb = versDate(absence[clesAbs.debut]);
-  const fin = versDate(absence[clesAbs.fin]) || deb;
-  const debTS = jourUTC(deb), finTS = jourUTC(fin);
-  const jours = joursEntre(debTS, finTS);
-
-  const couverture = {};
-  jours.forEach(j => {
-    couverture[j] = demiJourActives(absence, j, debTS, finTS);
-  });
-
-  if(portee === 'journee'){
-    couverture[jTSRetire] = {matin:false, apresmidi:false};
-  } else if(portee === 'demi-matin'){
-    couverture[jTSRetire] = {...couverture[jTSRetire], matin:false};
-  } else if(portee === 'demi-apresmidi'){
-    couverture[jTSRetire] = {...couverture[jTSRetire], apresmidi:false};
-  }
-
+// Transforme une couverture jour par jour (matin/après-midi) en fragments d'absence
+// (fusionne les jours pleins consécutifs, gère les débuts/fins en demi-journée)
+function fragmenterCouverture(jours, couverture){
   const fragments = [];
   let courant = null;
   jours.forEach(j => {
@@ -1520,6 +1540,55 @@ function decomposerAbsence(absence, jTSRetire, portee){
   });
   if(courant) fragments.push(courant);
   return fragments;
+}
+
+function decomposerAbsence(absence, jTSRetire, portee){
+  const deb = versDate(absence[clesAbs.debut]);
+  const fin = versDate(absence[clesAbs.fin]) || deb;
+  const debTS = jourUTC(deb), finTS = jourUTC(fin);
+  const jours = joursEntre(debTS, finTS);
+
+  const couverture = {};
+  jours.forEach(j => {
+    couverture[j] = demiJourActives(absence, j, debTS, finTS);
+  });
+
+  if(portee === 'journee'){
+    couverture[jTSRetire] = {matin:false, apresmidi:false};
+  } else if(portee === 'demi-matin'){
+    couverture[jTSRetire] = {...couverture[jTSRetire], matin:false};
+  } else if(portee === 'demi-apresmidi'){
+    couverture[jTSRetire] = {...couverture[jTSRetire], apresmidi:false};
+  }
+
+  return fragmenterCouverture(jours, couverture);
+}
+
+// Calcule les fragments à créer pour une nouvelle absence sur une période donnée,
+// en excluant automatiquement les demi-journées déjà couvertes par un Temps partiel existant
+function construireFragmentsDemandes(agent, jTSDebut, jTSFin, debutDemiSouhaite, finDemiSouhaite){
+  const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+  const jours = joursEntre(jTSDebut, jTSFin);
+  const couverture = {};
+  jours.forEach(j => {
+    let matin = true, apresmidi = true;
+    if(j === jTSDebut && debutDemiSouhaite === 'Apres midi') matin = false;
+    if(j === jTSFin && finDemiSouhaite === 'Matin') apresmidi = false;
+
+    const jourSpecial = trouverJourSpecial(j);
+    if(jourSpecial && (jourSpecial.categorie === 'jourferie' || jourSpecial.categorie === 'fermeturepref')){
+      matin = false;
+      apresmidi = false;
+    }
+
+    const tpMatin = trouverAbsencePourMoitie(absencesAgent, j, true);
+    const tpApresmidi = trouverAbsencePourMoitie(absencesAgent, j, false);
+    if(tpMatin && normalise(tpMatin.absence[clesAbs.type]).includes('tempspartiel')) matin = false;
+    if(tpApresmidi && normalise(tpApresmidi.absence[clesAbs.type]).includes('tempspartiel')) apresmidi = false;
+
+    couverture[j] = {matin, apresmidi};
+  });
+  return fragmenterCouverture(jours, couverture);
 }
 
 async function supprimerPartiel(absence, jTS, portee){
