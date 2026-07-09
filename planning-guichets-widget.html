@@ -116,7 +116,7 @@
     height:28px;
   }
   th.nouvelleSemaine, td.nouvelleSemaine{ border-left:2px solid #9AA3AD; }
-  th.nouveauMois, td.nouveauMois{ border-left:4px solid #5B6572; }
+  th.nouveauMois, td.nouveauMois{ border-left:2px solid #B0B6BD; }
   th.vacances{ background:var(--vert-vacances) !important; }
   th.ferme, td.ferme{
     background:repeating-linear-gradient(45deg, #E4E6E9, #E4E6E9 6px, #D6D9DD 6px, #D6D9DD 12px) !important;
@@ -167,8 +167,6 @@
     padding-left:8px;
     position:sticky;
     left:0;
-    top:56px;
-    z-index:15;
   }
   tr.sousSeparateur td{
     border-top:2px solid #9AA3AD;
@@ -1516,80 +1514,61 @@ async function enregistrerAbsence(agent, jTS, typeChoisi, estMatin, journeeEntie
   }
 }
 
-// Fusionne en tâche de fond toutes les absences adjacentes du même type qui se touchent
-// sur des journées complètes (pas de demi-journée à la jointure). Traite plusieurs fusions
-// enchaînées en un seul lot, et échoue silencieusement pour ne jamais bloquer l'affichage.
+// Fusionne en tâche de fond deux absences adjacentes du même type qui se touchent sur des
+// journées complètes (pas de demi-journée à la jointure). Une seule fusion par passage,
+// toujours sur des données réelles (jamais d'identifiant inventé) — si plusieurs fusions sont
+// nécessaires, chacune déclenche un nouveau chargement qui traitera la suivante. Échoue
+// silencieusement pour ne jamais bloquer l'affichage.
 async function tenterFusionEnArrierePlan(){
   try{
-    let copie = absences.map(a => ({...a}));
-    const idsTraites = new Set();
-    const actions = [];
-    let encore = true;
-    let securite = 0;
+    let trouve = null;
 
-    while(encore && securite < 200){
-      securite++;
-      encore = false;
+    for(const agent of agents){
+      const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
 
-      for(const agent of agents){
-        const absencesAgent = copie.filter(ab => ab[clesAbs.agent] === agent._id && !idsTraites.has(ab._id));
-        let trouve = null;
+      for(const a of absencesAgent){
+        const debA = versDate(a[clesAbs.debut]);
+        const finA = versDate(a[clesAbs.fin]) || debA;
+        if(!debA) continue;
+        const finTSa = jourUTC(finA);
+        const finDemiA = clesAbs.finDemi ? normalise(a[clesAbs.finDemi] || '') : '';
+        if(finDemiA.includes('matin')) continue;
 
-        for(const a of absencesAgent){
-          const debA = versDate(a[clesAbs.debut]);
-          const finA = versDate(a[clesAbs.fin]) || debA;
-          if(!debA) continue;
-          const finTSa = jourUTC(finA);
-          const finDemiA = clesAbs.finDemi ? normalise(a[clesAbs.finDemi] || '') : '';
-          if(finDemiA.includes('matin')) continue;
+        for(const b of absencesAgent){
+          if(a === b) continue;
+          if(normalise(b[clesAbs.type]) !== normalise(a[clesAbs.type])) continue;
+          const debB = versDate(b[clesAbs.debut]);
+          const finB = versDate(b[clesAbs.fin]) || debB;
+          if(!debB) continue;
+          const debTSb = jourUTC(debB);
+          const debDemiB = clesAbs.debutDemi ? normalise(b[clesAbs.debutDemi] || '') : '';
+          if(debDemiB.includes('apresmidi')) continue;
 
-          for(const b of absencesAgent){
-            if(a === b) continue;
-            if(normalise(b[clesAbs.type]) !== normalise(a[clesAbs.type])) continue;
-            const debB = versDate(b[clesAbs.debut]);
-            const finB = versDate(b[clesAbs.fin]) || debB;
-            if(!debB) continue;
-            const debTSb = jourUTC(debB);
-            const debDemiB = clesAbs.debutDemi ? normalise(b[clesAbs.debutDemi] || '') : '';
-            if(debDemiB.includes('apresmidi')) continue;
-
-            if(debTSb === finTSa + 86400000){
-              trouve = {a, b, agent, debTS: jourUTC(debA), finTS: jourUTC(finB)};
-              break;
-            }
+          if(debTSb === finTSa + 86400000){
+            trouve = {a, b, agent, debTS: jourUTC(debA), finTS: jourUTC(finB)};
+            break;
           }
-          if(trouve) break;
         }
-
-        if(trouve){
-          idsTraites.add(trouve.a._id);
-          idsTraites.add(trouve.b._id);
-          actions.push(['RemoveRecord', 'Absences', trouve.a._id]);
-          actions.push(['RemoveRecord', 'Absences', trouve.b._id]);
-          const champs = {
-            [clesAbs.agent]: trouve.agent._id,
-            [clesAbs.debut]: versTimestampGrist(trouve.debTS),
-            [clesAbs.fin]: versTimestampGrist(trouve.finTS),
-            [clesAbs.type]: trouve.a[clesAbs.type]
-          };
-          if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = trouve.a[clesAbs.debutDemi] || '';
-          if(clesAbs.finDemi) champs[clesAbs.finDemi] = trouve.b[clesAbs.finDemi] || '';
-          actions.push(['AddRecord', 'Absences', null, champs]);
-
-          const virtuel = {...trouve.a, _id: 'virtuel_' + securite};
-          virtuel[clesAbs.debut] = versTimestampGrist(trouve.debTS);
-          virtuel[clesAbs.fin] = versTimestampGrist(trouve.finTS);
-          if(clesAbs.debutDemi) virtuel[clesAbs.debutDemi] = trouve.a[clesAbs.debutDemi] || '';
-          if(clesAbs.finDemi) virtuel[clesAbs.finDemi] = trouve.b[clesAbs.finDemi] || '';
-          copie.push(virtuel);
-
-          encore = true;
-        }
+        if(trouve) break;
       }
+      if(trouve) break;
     }
 
-    if(actions.length){
-      await grist.docApi.applyUserActions(actions);
+    if(trouve){
+      const champs = {
+        [clesAbs.agent]: trouve.agent._id,
+        [clesAbs.debut]: versTimestampGrist(trouve.debTS),
+        [clesAbs.fin]: versTimestampGrist(trouve.finTS),
+        [clesAbs.type]: trouve.a[clesAbs.type]
+      };
+      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = trouve.a[clesAbs.debutDemi] || '';
+      if(clesAbs.finDemi) champs[clesAbs.finDemi] = trouve.b[clesAbs.finDemi] || '';
+      await grist.docApi.applyUserActions([
+        ['RemoveRecord', 'Absences', trouve.a._id],
+        ['RemoveRecord', 'Absences', trouve.b._id],
+        ['AddRecord', 'Absences', null, champs]
+      ]);
+      // Cette fusion déclenche onRecords -> chargerDonnees, qui traitera une éventuelle fusion suivante.
     }
   }catch(err){
     console.warn('Fusion automatique ignorée suite à une erreur :', err);
