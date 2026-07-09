@@ -312,11 +312,6 @@
 <body>
 
 <div id="barre">
-  <div class="toggleVue" id="toggleVue" title="Basculer entre vue 1 mois et vue 2 mois">
-    <span class="labelToggle actif" id="labelUnMois">1 mois</span>
-    <span class="pisteToggle"><span class="curseurToggle" id="curseurToggle"></span></span>
-    <span class="labelToggle" id="labelDeuxMois">2 mois</span>
-  </div>
   <button id="btnPrev">‹</button>
   <div id="titreMois">—</div>
   <button id="btnNext">›</button>
@@ -436,7 +431,7 @@ let clesAbs = {};
 let clesJS = {};
 let joursSpeciaux = [];
 let poleActif = '';
-let deuxMois = false;
+let deuxMois = true;
 let agentSurligne = null;
 let ignorerProchainClicDocument = false;
 let typeSelectionneModale = null;
@@ -1572,13 +1567,6 @@ document.getElementById('btnNext').onclick = () => {
 };
 document.getElementById('filtrePole').onchange = (e) => {
   poleActif = e.target.value;
-  dessiner();
-};
-document.getElementById('toggleVue').onclick = () => {
-  deuxMois = !deuxMois;
-  document.getElementById('curseurToggle').classList.toggle('actif', deuxMois);
-  document.getElementById('labelUnMois').classList.toggle('actif', !deuxMois);
-  document.getElementById('labelDeuxMois').classList.toggle('actif', deuxMois);
   dessiner();
 };
 document.getElementById('btnAjouterAbsence').onclick = (e) => {
