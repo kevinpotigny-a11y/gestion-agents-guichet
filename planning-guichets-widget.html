@@ -959,6 +959,166 @@ function viderSurbrillance(){
 }
 
 
+// ---------- Moteur unifié de résolution des congés ----------
+// Calcule, pour un agent et une plage donnée, les fragments à créer (nouveau type) en excluant
+// silencieusement les jours fériés/fermeture ET le temps partiel (uniquement si la plage dépasse
+// un seul jour — un clic direct sur un seul jour reste toujours modifiable, y compris un temps
+// partiel). Calcule aussi ce qu'il faut retirer/recréer parmi les absences existantes touchées,
+// en préservant la partie de ces absences qui déborde de la plage sélectionnée.
+function resoudreAgent(agent, jTSDebut, jTSFin, debutDemiSouhaite, finDemiSouhaite, typeChoisiId){
+  const joursSel = joursEntre(jTSDebut, jTSFin);
+  const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
+  const plageMultiJours = jTSFin > jTSDebut;
+
+  const couverture = {};
+  joursSel.forEach(j => {
+    let matin = true, apresmidi = true;
+    if(j === jTSDebut && debutDemiSouhaite === 'Apres midi') matin = false;
+    if(j === jTSFin && finDemiSouhaite === 'Matin') apresmidi = false;
+    couverture[j] = {matin, apresmidi};
+  });
+
+  // Exclusion silencieuse : jours fériés/fermeture (toujours), temps partiel (seulement en plage)
+  joursSel.forEach(j => {
+    const js = trouverJourSpecial(j);
+    if(js && (js.categorie === 'jourferie' || js.categorie === 'fermeturepref')){
+      couverture[j].matin = false;
+      couverture[j].apresmidi = false;
+      return;
+    }
+    if(plageMultiJours){
+      const tpM = trouverAbsencePourMoitie(absencesAgent, j, true);
+      const tpA = trouverAbsencePourMoitie(absencesAgent, j, false);
+      if(tpM && normalise(tpM.absence[clesAbs.type]).includes('tempspartiel')) couverture[j].matin = false;
+      if(tpA && normalise(tpA.absence[clesAbs.type]).includes('tempspartiel')) couverture[j].apresmidi = false;
+    }
+  });
+
+  const nouveauxFragments = fragmenterCouverture(joursSel, couverture);
+
+  // Absences existantes touchées (le temps partiel protégé ci-dessus n'est jamais concerné ici
+  // puisqu'il est resté à sa couverture d'origine, non demandée par la nouvelle sélection)
+  const absencesTouchees = new Map();
+  joursSel.forEach(j => {
+    [true, false].forEach(estMatin => {
+      const t = trouverAbsencePourMoitie(absencesAgent, j, estMatin);
+      if(t && couverture[j] && (estMatin ? couverture[j].matin : couverture[j].apresmidi)){
+        absencesTouchees.set(t.absence._id, t.absence);
+      }
+    });
+  });
+
+  let conflit = false;
+  const conflitsDetail = [];
+  const idsASupprimer = [];
+  const fragmentsARecreer = [];
+
+  absencesTouchees.forEach(absence => {
+    idsASupprimer.push(absence._id);
+    const debO = versDate(absence[clesAbs.debut]);
+    const finO = versDate(absence[clesAbs.fin]) || debO;
+    const debTSo = jourUTC(debO), finTSo = jourUTC(finO);
+    const joursO = joursEntre(debTSo, finTSo);
+    const couvertureRestante = {};
+    joursO.forEach(j => {
+      let {matin, apresmidi} = demiJourActives(absence, j, debTSo, finTSo);
+      if(j >= jTSDebut && j <= jTSFin && couverture[j]){
+        if(couverture[j].matin) matin = false;
+        if(couverture[j].apresmidi) apresmidi = false;
+      }
+      couvertureRestante[j] = {matin, apresmidi};
+    });
+    fragmenterCouverture(joursO, couvertureRestante).forEach(f => {
+      fragmentsARecreer.push({...f, type: absence[clesAbs.type]});
+    });
+
+    if(normalise(absence[clesAbs.type]) !== normalise(typeChoisiId)){
+      conflit = true;
+      conflitsDetail.push({type: absence[clesAbs.type]});
+    }
+  });
+
+  return {agent, conflit, conflitsDetail, idsASupprimer, nouveauxFragments, fragmentsARecreer};
+}
+
+function construireActionsDepuisResolution(resolution, typeChoisiId){
+  const actions = [];
+  resolution.idsASupprimer.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
+  resolution.fragmentsARecreer.forEach(f => {
+    const champs = {
+      [clesAbs.agent]: resolution.agent._id,
+      [clesAbs.debut]: versTimestampGrist(f.debut),
+      [clesAbs.fin]: versTimestampGrist(f.fin),
+      [clesAbs.type]: f.type
+    };
+    if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
+    if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
+    actions.push(['AddRecord', 'Absences', null, champs]);
+  });
+  resolution.nouveauxFragments.forEach(f => {
+    const champs = {
+      [clesAbs.agent]: resolution.agent._id,
+      [clesAbs.debut]: versTimestampGrist(f.debut),
+      [clesAbs.fin]: versTimestampGrist(f.fin),
+      [clesAbs.type]: typeChoisiId
+    };
+    if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
+    if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
+    actions.push(['AddRecord', 'Absences', null, champs]);
+  });
+  return actions;
+}
+
+async function executerActions(actions){
+  fermerPopup();
+  document.getElementById('statut').textContent = 'Enregistrement…';
+  try{
+    if(actions.length) await grist.docApi.applyUserActions(actions);
+  }catch(err){
+    alert("Erreur lors de l'enregistrement : " + err.message);
+  }
+}
+
+// cibles : [{agent, jTSDebut, jTSFin}, ...] — une ou plusieurs cibles, une ou plusieurs plages
+function proposerEtEnregistrer(cibles, debutDemi, finDemi, typeChoisi, texteEntete){
+  const resolutions = cibles.map(c => resoudreAgent(c.agent, c.jTSDebut, c.jTSFin, debutDemi, finDemi, typeChoisi.id));
+  const avecConflit = resolutions.filter(r => r.conflit);
+
+  const executer = () => {
+    const actions = [];
+    resolutions.forEach(r => actions.push(...construireActionsDepuisResolution(r, typeChoisi.id)));
+    executerActions(actions);
+  };
+
+  if(avecConflit.length === 0){
+    executer();
+    return;
+  }
+
+  const popup = document.getElementById('popup');
+  let html = `<div class="entete">${texteEntete}</div>`;
+  if(resolutions.length === 1){
+    const detail = avecConflit[0].conflitsDetail.map(c => `<strong>${c.type}</strong> → <strong>${typeChoisi.libelle}</strong>`).join('<br>');
+    html += `<div class="info">⚠ Ceci va remplacer :<br>${detail}</div>`;
+  } else {
+    const nomAgent = r => (r.agent[clesAgent.nom]||'') + (clesAgent.prenom && r.agent[clesAgent.prenom] ? ' ' + r.agent[clesAgent.prenom] : '');
+    const liste = avecConflit.slice(0, 6).map(nomAgent).join(', ') + (avecConflit.length > 6 ? ` +${avecConflit.length - 6} autres` : '');
+    html += `<div class="info">⚠ ${avecConflit.length} sélection(s) ont déjà une absence différente, elle sera remplacée par <strong>${typeChoisi.libelle}</strong> :<br>${liste}</div>`;
+  }
+  popup.innerHTML = html;
+
+  const btnConfirmer = document.createElement('button');
+  btnConfirmer.textContent = 'Confirmer le remplacement';
+  btnConfirmer.style.color = 'var(--rouge)';
+  btnConfirmer.onclick = executer;
+  popup.appendChild(btnConfirmer);
+  const btnAnnuler = document.createElement('button');
+  btnAnnuler.textContent = 'Annuler';
+  btnAnnuler.onclick = () => fermerPopup();
+  popup.appendChild(btnAnnuler);
+}
+
+// ---------- Popup simple (clic sur une case) ----------
 function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin, journeeEntierePreselectionnee){
   evt.stopPropagation();
   const popup = document.getElementById('popup');
@@ -966,11 +1126,32 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin, journ
   const nomAgent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
   const dateLisible = new Date(jTS).toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', timeZone:'UTC'});
 
-  if(verrouillee){
-    popup.innerHTML = `
-      <div class="entete">${nomAgent}<br>${dateLisible}</div>
-      <div class="info">Cette case fait partie d'une absence sur plusieurs jours (${absExistante[clesAbs.type]}).</div>
-    `;
+  popup.innerHTML = `
+    <div class="entete">${nomAgent}<br>${dateLisible}</div>
+    <div class="sousMoment">${estMatin ? 'Matin' : 'Après-midi'} sélectionné${journeeEntierePreselectionnee ? ' (les deux moitiés)' : ''}</div>
+  `;
+  const labelToggle = document.createElement('label');
+  labelToggle.className = 'toggle';
+  labelToggle.innerHTML = `<input type="checkbox" id="chkJourneeEntiere"${journeeEntierePreselectionnee ? ' checked' : ''}> Toute la journée (matin + après-midi)`;
+  popup.appendChild(labelToggle);
+
+  TYPES.forEach(t => {
+    const btn = document.createElement('button');
+    const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
+    btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
+    btn.onclick = () => {
+      const journeeEntiere = document.getElementById('chkJourneeEntiere').checked;
+      let debutDemi = '', finDemi = '';
+      if(!journeeEntiere){
+        const val = estMatin ? 'Matin' : 'Apres midi';
+        debutDemi = val; finDemi = val;
+      }
+      proposerEtEnregistrer([{agent, jTSDebut: jTS, jTSFin: jTS}], debutDemi, finDemi, t, `${nomAgent}<br>${dateLisible}`);
+    };
+    popup.appendChild(btn);
+  });
+
+  if(absExistante){
     const btnDemi = document.createElement('button');
     btnDemi.textContent = 'Supprimer cette demi-journée (' + (estMatin ? 'matin' : 'après-midi') + ')';
     btnDemi.onclick = () => supprimerPartiel(absExistante, jTS, estMatin ? 'demi-matin' : 'demi-apresmidi');
@@ -986,33 +1167,6 @@ function ouvrirPopup(evt, agent, jTS, absExistante, verrouillee, estMatin, journ
     btnPeriode.textContent = 'Supprimer toute la période';
     btnPeriode.onclick = () => supprimerAbsence(absExistante);
     popup.appendChild(btnPeriode);
-  } else {
-    popup.innerHTML = `
-      <div class="entete">${nomAgent}<br>${dateLisible}</div>
-      <div class="sousMoment">${estMatin ? 'Matin' : 'Après-midi'} sélectionné${journeeEntierePreselectionnee ? ' (les deux moitiés)' : ''}</div>
-    `;
-    const labelToggle = document.createElement('label');
-    labelToggle.className = 'toggle';
-    labelToggle.innerHTML = `<input type="checkbox" id="chkJourneeEntiere"${journeeEntierePreselectionnee ? ' checked' : ''}> Toute la journée (matin + après-midi)`;
-    popup.appendChild(labelToggle);
-
-    TYPES.forEach(t => {
-      const btn = document.createElement('button');
-      const couleur = t.classe === 'teletravail' ? '#F3F4F6' : `var(--${t.var})`;
-      btn.innerHTML = `<span class="pastille" style="background:${couleur}"></span>${t.libelle}`;
-      btn.onclick = () => {
-        const journeeEntiere = document.getElementById('chkJourneeEntiere').checked;
-        proposerEnregistrement(agent, jTS, t, estMatin, journeeEntiere, absExistante, dateLisible, nomAgent);
-      };
-      popup.appendChild(btn);
-    });
-    if(absExistante){
-      const btnDel = document.createElement('button');
-      btnDel.className = 'supprimer';
-      btnDel.textContent = 'Effacer cette absence';
-      btnDel.onclick = () => supprimerAbsence(absExistante);
-      popup.appendChild(btnDel);
-    }
   }
 
   popup.style.display = 'block';
@@ -1085,7 +1239,8 @@ function ouvrirPopupMultiple(ligneMin, ligneMax, colMin, colMax, elementAncrage)
         if(choix === 'matin'){ debutDemi = ''; finDemi = 'Matin'; }
         else if(choix === 'apresmidi'){ debutDemi = 'Apres midi'; finDemi = ''; }
       }
-      proposerEnregistrementMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, t);
+      const cibles = agentsSel.map(agent => ({agent, jTSDebut, jTSFin}));
+      proposerEtEnregistrer(cibles, debutDemi, finDemi, t, 'Confirmation nécessaire');
     };
     popup.appendChild(btn);
   });
@@ -1104,100 +1259,6 @@ function ouvrirPopupMultiple(ligneMin, ligneMax, colMin, colMax, elementAncrage)
   let haut = rect.bottom + 4;
   if(haut + 320 > window.innerHeight) haut = Math.max(10, window.innerHeight - 330);
   popup.style.top = haut + 'px';
-}
-
-// Évalue, pour chaque agent sélectionné, les conflits (type différent) et verrouillages (absence multi-jours existante)
-function evaluerActionMultiple(agentsSel, jTSDebut, jTSFin, debutDemiChoisi, finDemiChoisi, typeChoisiId){
-  const joursPeriode = joursEntre(jTSDebut, jTSFin);
-  return agentsSel.map(agent => {
-    const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
-    let verrouille = false;
-    const conflits = [];
-    const idsExistants = new Set();
-    joursPeriode.forEach(j => {
-      let matinDemande = true, apresmidiDemande = true;
-      if(j === jTSDebut && debutDemiChoisi === 'Apres midi') matinDemande = false;
-      if(j === jTSFin && finDemiChoisi === 'Matin') apresmidiDemande = false;
-      [[true, matinDemande], [false, apresmidiDemande]].forEach(([estMatin, demande]) => {
-        if(!demande) return;
-        const trouve = trouverAbsencePourMoitie(absencesAgent, j, estMatin);
-        if(trouve){
-          const estTempsPartiel = normalise(trouve.absence[clesAbs.type]).includes('tempspartiel');
-          if(estTempsPartiel) return; // on respecte le temps partiel, on ne le touche pas
-          if(trouve.debTS !== trouve.finTS){
-            verrouille = true;
-          } else {
-            idsExistants.add(trouve.absence._id);
-            if(normalise(trouve.absence[clesAbs.type]) !== normalise(typeChoisiId)){
-              conflits.push({jour: j, demi: estMatin ? 'matin' : 'après-midi', ancienType: trouve.absence[clesAbs.type]});
-            }
-          }
-        }
-      });
-    });
-    return {agent, conflits, verrouille, idsExistants};
-  });
-}
-
-function proposerEnregistrementMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi){
-  const evaluation = evaluerActionMultiple(agentsSel, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
-  const ignores = evaluation.filter(e => e.verrouille);
-  const avecConflit = evaluation.filter(e => !e.verrouille && e.conflits.length > 0);
-  const sansConflit = evaluation.filter(e => !e.verrouille && e.conflits.length === 0);
-
-  if(avecConflit.length === 0 && ignores.length === 0){
-    enregistrerAbsenceMultiple([...sansConflit, ...avecConflit], jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
-    return;
-  }
-
-  const popup = document.getElementById('popup');
-  const nomsAgent = (e) => (e.agent[clesAgent.nom]||'') + (clesAgent.prenom && e.agent[clesAgent.prenom] ? ' ' + e.agent[clesAgent.prenom] : '');
-  let html = `<div class="entete">Confirmation nécessaire</div>`;
-  if(avecConflit.length > 0){
-    const liste = avecConflit.slice(0, 6).map(e => nomsAgent(e)).join(', ') + (avecConflit.length > 6 ? ` +${avecConflit.length - 6} autres` : '');
-    html += `<div class="info">⚠ ${avecConflit.length} agent(s) ont déjà une absence différente sur cette période, elle sera remplacée par <strong>${typeChoisi.libelle}</strong> :<br>${liste}</div>`;
-  }
-  if(ignores.length > 0){
-    const liste = ignores.slice(0, 6).map(e => nomsAgent(e)).join(', ') + (ignores.length > 6 ? ` +${ignores.length - 6} autres` : '');
-    html += `<div class="info">ℹ ${ignores.length} agent(s) ignoré(s) car déjà dans une absence multi-jours existante (à modifier depuis le tableau) :<br>${liste}</div>`;
-  }
-  popup.innerHTML = html;
-
-  const btnConfirmer = document.createElement('button');
-  btnConfirmer.textContent = 'Confirmer';
-  btnConfirmer.style.color = 'var(--rouge)';
-  btnConfirmer.onclick = () => enregistrerAbsenceMultiple([...sansConflit, ...avecConflit], jTSDebut, jTSFin, debutDemi, finDemi, typeChoisi.id);
-  popup.appendChild(btnConfirmer);
-  const btnAnnuler = document.createElement('button');
-  btnAnnuler.textContent = 'Annuler';
-  btnAnnuler.onclick = () => fermerPopup();
-  popup.appendChild(btnAnnuler);
-}
-
-async function enregistrerAbsenceMultiple(evaluationsRetenues, jTSDebut, jTSFin, debutDemi, finDemi, typeChoisiId){
-  fermerPopup();
-  document.getElementById('statut').textContent = 'Enregistrement…';
-  try{
-    const actions = [];
-    evaluationsRetenues.forEach(e => {
-      e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
-      const fragments = construireFragmentsDemandes(e.agent, jTSDebut, jTSFin, debutDemi, finDemi);
-      fragments.forEach(f => {
-        const champs = {
-          [clesAbs.agent]: e.agent._id,
-          [clesAbs.debut]: versTimestampGrist(f.debut),
-          [clesAbs.fin]: versTimestampGrist(f.fin),
-          [clesAbs.type]: typeChoisiId
-        };
-        if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
-        if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
-        actions.push(['AddRecord', 'Absences', null, champs]);
-      });
-    });
-    await grist.docApi.applyUserActions(actions);
-  }catch(err){
-    alert("Erreur lors de l'enregistrement : " + err.message);
-  }
 }
 
 // ---------- Modale générale (bouton "Enregistrer une absence") ----------
@@ -1324,7 +1385,7 @@ function lancerEnregistrementDepuisModale(typeChoisi){
   if(moment === 'matin'){ finDemiJour = 'Matin'; }
   else if(moment === 'apresmidi'){ debutDemiJour = 'Apres midi'; }
 
-  let occurrences = [];
+  let cibles = [];
 
   if(recurrence){
     const joursCoches = [...document.querySelectorAll('.chkJourSemaine:checked')].map(c => parseInt(c.value, 10));
@@ -1332,131 +1393,16 @@ function lancerEnregistrementDepuisModale(typeChoisi){
     joursEntre(jTSDebut, jTSFin).forEach(j => {
       const dateJ = new Date(j);
       if(joursCoches.includes(dateJ.getUTCDay())){
-        occurrences.push({jTSDebut: j, jTSFin: j, debutDemi: debutDemiJour, finDemi: finDemiJour});
+        cibles.push({agent, jTSDebut: j, jTSFin: j});
       }
     });
-    if(occurrences.length === 0){ alert("Aucun jour ne correspond à ces critères sur la période choisie."); return; }
+    if(cibles.length === 0){ alert("Aucun jour ne correspond à ces critères sur la période choisie."); return; }
   } else {
-    occurrences.push({jTSDebut, jTSFin, debutDemi: debutDemiJour, finDemi: finDemiJour});
+    cibles.push({agent, jTSDebut, jTSFin});
   }
 
-  proposerEnregistrementOccurrences(agent, occurrences, typeChoisi);
-}
-
-function proposerEnregistrementOccurrences(agent, occurrences, typeChoisi){
-  const evaluations = occurrences.map(occ => {
-    const resultat = evaluerActionMultiple([agent], occ.jTSDebut, occ.jTSFin, occ.debutDemi, occ.finDemi, typeChoisi.id)[0];
-    return {occ, ...resultat};
-  });
-  const ignores = evaluations.filter(e => e.verrouille);
-  const avecConflit = evaluations.filter(e => !e.verrouille && e.conflits.length > 0);
-  const sansConflit = evaluations.filter(e => !e.verrouille && e.conflits.length === 0);
-
-  if(avecConflit.length === 0 && ignores.length === 0){
-    enregistrerOccurrences(agent, [...sansConflit, ...avecConflit], typeChoisi.id);
-    return;
-  }
-
-  const popup = document.getElementById('popup');
   const nomAgent = (agent[clesAgent.nom]||'') + (clesAgent.prenom && agent[clesAgent.prenom] ? ' ' + agent[clesAgent.prenom] : '');
-  let html = `<div class="entete">Confirmation nécessaire<br><span style="font-weight:400;">${nomAgent}</span></div>`;
-  if(avecConflit.length > 0){
-    html += `<div class="info">⚠ ${avecConflit.length} jour(s) ont déjà une absence différente, elle sera remplacée par <strong>${typeChoisi.libelle}</strong>.</div>`;
-  }
-  if(ignores.length > 0){
-    html += `<div class="info">ℹ ${ignores.length} jour(s) ignoré(s) car déjà dans une absence multi-jours existante (à modifier depuis le tableau).</div>`;
-  }
-  popup.innerHTML = html;
-
-  const btnConfirmer = document.createElement('button');
-  btnConfirmer.textContent = 'Confirmer';
-  btnConfirmer.style.color = 'var(--rouge)';
-  btnConfirmer.onclick = () => enregistrerOccurrences(agent, [...sansConflit, ...avecConflit], typeChoisi.id);
-  popup.appendChild(btnConfirmer);
-  const btnAnnuler = document.createElement('button');
-  btnAnnuler.textContent = 'Annuler';
-  btnAnnuler.onclick = () => fermerPopup();
-  popup.appendChild(btnAnnuler);
-}
-
-async function enregistrerOccurrences(agent, evaluationsRetenues, typeChoisiId){
-  fermerPopup();
-  document.getElementById('statut').textContent = 'Enregistrement…';
-  try{
-    const actions = [];
-    evaluationsRetenues.forEach(e => {
-      e.idsExistants.forEach(id => actions.push(['RemoveRecord', 'Absences', id]));
-      const fragments = construireFragmentsDemandes(agent, e.occ.jTSDebut, e.occ.jTSFin, e.occ.debutDemi, e.occ.finDemi);
-      fragments.forEach(f => {
-        const champs = {
-          [clesAbs.agent]: agent._id,
-          [clesAbs.debut]: versTimestampGrist(f.debut),
-          [clesAbs.fin]: versTimestampGrist(f.fin),
-          [clesAbs.type]: typeChoisiId
-        };
-        if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = f.debutDemi || '';
-        if(clesAbs.finDemi) champs[clesAbs.finDemi] = f.finDemi || '';
-        actions.push(['AddRecord', 'Absences', null, champs]);
-      });
-    });
-    await grist.docApi.applyUserActions(actions);
-  }catch(err){
-    alert("Erreur lors de l'enregistrement : " + err.message);
-  }
-}
-
-// Vérifie si l'action envisagée écrase une absence existante d'un type différent,
-// ou touche une absence multi-jours (dans ce cas, action bloquée pour cette moitié).
-function evaluerAction(agent, jTS, typeChoisi, estMatin, journeeEntiere){
-  const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
-  const parties = journeeEntiere ? [true, false] : [estMatin];
-  const conflits = [];
-  const verrouillages = [];
-  parties.forEach(m => {
-    const trouve = trouverAbsencePourMoitie(absencesAgent, jTS, m);
-    if(trouve){
-      if(trouve.debTS !== trouve.finTS){
-        verrouillages.push(m ? 'matin' : 'après-midi');
-      } else if(normalise(trouve.absence[clesAbs.type]) !== normalise(typeChoisi)){
-        conflits.push({demi: m ? 'matin' : 'après-midi', ancienType: trouve.absence[clesAbs.type]});
-      }
-    }
-  });
-  return {conflits, verrouillages};
-}
-
-function proposerEnregistrement(agent, jTS, typeChoisi, estMatin, journeeEntiere, absExistante, dateLisible, nomAgent){
-  const {conflits, verrouillages} = evaluerAction(agent, jTS, typeChoisi.id, estMatin, journeeEntiere);
-
-  if(verrouillages.length > 0){
-    const popup = document.getElementById('popup');
-    popup.innerHTML = `
-      <div class="entete">${nomAgent}<br>${dateLisible}</div>
-      <div class="info">⚠ Le ${verrouillages.join(' et le ')} de ce jour fait partie d'une absence sur plusieurs jours.<br>Décoche "Toute la journée" ou modifie-la depuis le tableau Absences.</div>
-    `;
-    return;
-  }
-
-  if(conflits.length > 0){
-    const popup = document.getElementById('popup');
-    const detail = conflits.map(c => `${c.demi} : <strong>${c.ancienType}</strong> → <strong>${typeChoisi.libelle}</strong>`).join('<br>');
-    popup.innerHTML = `
-      <div class="entete">${nomAgent}<br>${dateLisible}</div>
-      <div class="info">⚠ Ceci va remplacer :<br>${detail}</div>
-    `;
-    const btnConfirmer = document.createElement('button');
-    btnConfirmer.textContent = 'Confirmer le remplacement';
-    btnConfirmer.style.color = 'var(--rouge)';
-    btnConfirmer.onclick = () => enregistrerAbsence(agent, jTS, typeChoisi.id, estMatin, journeeEntiere, absExistante);
-    popup.appendChild(btnConfirmer);
-    const btnAnnuler = document.createElement('button');
-    btnAnnuler.textContent = 'Annuler';
-    btnAnnuler.onclick = () => fermerPopup();
-    popup.appendChild(btnAnnuler);
-    return;
-  }
-
-  enregistrerAbsence(agent, jTS, typeChoisi.id, estMatin, journeeEntiere, absExistante);
+  proposerEtEnregistrer(cibles, debutDemiJour, finDemiJour, typeChoisi, `Confirmation nécessaire<br><span style="font-weight:400;">${nomAgent}</span>`);
 }
 
 document.addEventListener('click', (e) => {
@@ -1469,50 +1415,6 @@ document.addEventListener('click', (e) => {
     fermerPopup();
   }
 });
-
-async function enregistrerAbsence(agent, jTS, typeChoisi, estMatin, journeeEntiere, absExistante){
-  fermerPopup();
-  document.getElementById('statut').textContent = 'Enregistrement…';
-  try{
-    const ts = versTimestampGrist(jTS);
-
-    if(journeeEntiere){
-      const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
-      const idsASupprimer = new Set();
-      [true, false].forEach(m => {
-        const t = trouverAbsencePourMoitie(absencesAgent, jTS, m);
-        if(t && t.debTS === t.finTS) idsASupprimer.add(t.absence._id);
-      });
-      const actions = [...idsASupprimer].map(id => ['RemoveRecord', 'Absences', id]);
-      actions.push(['AddRecord', 'Absences', null, {
-        [clesAbs.agent]: agent._id,
-        [clesAbs.debut]: ts,
-        [clesAbs.fin]: ts,
-        [clesAbs.type]: typeChoisi
-      }]);
-      await grist.docApi.applyUserActions(actions);
-    } else if(absExistante){
-      await grist.docApi.applyUserActions([
-        ['UpdateRecord', 'Absences', absExistante._id, {[clesAbs.type]: typeChoisi}]
-      ]);
-    } else {
-      const valeurDemi = estMatin ? 'Matin' : 'Apres midi';
-      const champs = {
-        [clesAbs.agent]: agent._id,
-        [clesAbs.debut]: ts,
-        [clesAbs.fin]: ts,
-        [clesAbs.type]: typeChoisi
-      };
-      if(clesAbs.debutDemi) champs[clesAbs.debutDemi] = valeurDemi;
-      if(clesAbs.finDemi) champs[clesAbs.finDemi] = valeurDemi;
-      await grist.docApi.applyUserActions([
-        ['AddRecord', 'Absences', null, champs]
-      ]);
-    }
-  }catch(err){
-    alert("Erreur lors de l'enregistrement : " + err.message);
-  }
-}
 
 // Fusionne en tâche de fond deux absences adjacentes du même type qui se touchent sur des
 // journées complètes (pas de demi-journée à la jointure). Une seule fusion par passage,
@@ -1637,33 +1539,6 @@ function decomposerAbsence(absence, jTSRetire, portee){
     couverture[jTSRetire] = {...couverture[jTSRetire], apresmidi:false};
   }
 
-  return fragmenterCouverture(jours, couverture);
-}
-
-// Calcule les fragments à créer pour une nouvelle absence sur une période donnée,
-// en excluant automatiquement les demi-journées déjà couvertes par un Temps partiel existant
-function construireFragmentsDemandes(agent, jTSDebut, jTSFin, debutDemiSouhaite, finDemiSouhaite){
-  const absencesAgent = absences.filter(ab => ab[clesAbs.agent] === agent._id);
-  const jours = joursEntre(jTSDebut, jTSFin);
-  const couverture = {};
-  jours.forEach(j => {
-    let matin = true, apresmidi = true;
-    if(j === jTSDebut && debutDemiSouhaite === 'Apres midi') matin = false;
-    if(j === jTSFin && finDemiSouhaite === 'Matin') apresmidi = false;
-
-    const jourSpecial = trouverJourSpecial(j);
-    if(jourSpecial && (jourSpecial.categorie === 'jourferie' || jourSpecial.categorie === 'fermeturepref')){
-      matin = false;
-      apresmidi = false;
-    }
-
-    const tpMatin = trouverAbsencePourMoitie(absencesAgent, j, true);
-    const tpApresmidi = trouverAbsencePourMoitie(absencesAgent, j, false);
-    if(tpMatin && normalise(tpMatin.absence[clesAbs.type]).includes('tempspartiel')) matin = false;
-    if(tpApresmidi && normalise(tpApresmidi.absence[clesAbs.type]).includes('tempspartiel')) apresmidi = false;
-
-    couverture[j] = {matin, apresmidi};
-  });
   return fragmenterCouverture(jours, couverture);
 }
 
