@@ -527,8 +527,8 @@ async function chargerDonnees(){
     document.getElementById('statut').textContent = '';
     dessiner();
 
-    // Fusion des congés adjacents : en tâche de fond, ne bloque jamais l'affichage
-    tenterFusionEnArrierePlan();
+    // Fusion automatique temporairement désactivée (boucle de rechargement trop fréquente).
+    // tenterFusionEnArrierePlan();
   }catch(err){
     document.getElementById('statut').textContent = 'Erreur';
     const zone = document.getElementById('erreur');
